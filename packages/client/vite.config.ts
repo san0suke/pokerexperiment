@@ -15,5 +15,10 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Bind to every interface so phones and other devices on the network can reach it.
+    host: true,
+    // Fail loudly instead of drifting to 5174 — a silent port change looks like
+    // "the site is down" when you're typing the URL into a phone.
+    strictPort: true,
   },
 });

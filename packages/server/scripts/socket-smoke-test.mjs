@@ -1,18 +1,22 @@
 // Temporary end-to-end smoke test for the socket layer.
 import { io } from 'socket.io-client';
 
-const API = 'http://localhost:3000';
+// Point at a LAN/Tailscale address to verify the game really is reachable from
+// other devices: SMOKE_API=http://192.168.0.190:3000 npm run smoke -w @poker/server
+const API = process.env.SMOKE_API || 'http://localhost:3000';
+// Browsers always send Origin; mimic it so the CORS path is exercised too.
+const ORIGIN = process.env.SMOKE_ORIGIN || API.replace(/:\d+$/, ':5173');
 
 async function auth(username, email, password) {
   let res = await fetch(`${API}/auth/register`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
     body: JSON.stringify({ username, email, password }),
   });
   if (!res.ok) {
     res = await fetch(`${API}/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
       body: JSON.stringify({ username, password }),
     });
   }
@@ -22,7 +26,7 @@ async function auth(username, email, password) {
 
 function connect(token) {
   return new Promise((resolve, reject) => {
-    const socket = io(API, { auth: { token } });
+    const socket = io(API, { auth: { token }, extraHeaders: { Origin: ORIGIN } });
     socket.on('connect', () => resolve(socket));
     socket.on('connect_error', (err) => reject(err));
   });

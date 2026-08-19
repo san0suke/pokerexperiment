@@ -1,10 +1,9 @@
 import { io, type Socket } from 'socket.io-client';
 import type { ClientToServerEvents, ServerToClientEvents } from '@poker/shared';
 import { getToken } from './auth-storage.js';
+import { SOCKET_URL } from './backend-url.js';
 
 export type PokerClientSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
-
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3000';
 
 let socket: PokerClientSocket | null = null;
 

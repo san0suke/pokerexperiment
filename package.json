@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"npm run dev -w @poker/server\" \"npm run dev -w @poker/client\"",
     "build": "npm run build -w @poker/shared && npm run build -w @poker/server && npm run build -w @poker/client",
-    "test": "npm run test -w @poker/shared",
+    "test": "npm run test -w @poker/shared && npm run test -w @poker/server",
     "lint": "eslint ."
   },
   "devDependencies": {

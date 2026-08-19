@@ -19,5 +19,8 @@ export const env = {
   databaseUrl: required('DATABASE_URL'),
   jwtSecret: required('JWT_SECRET'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '24h',
-  corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+  // Undefined means "allow local network origins" — see buildCorsOriginCheck.
+  corsOrigin: process.env.CORS_ORIGIN,
+  // 0.0.0.0 so other devices on the network can reach the API and the socket.
+  host: process.env.HOST ?? '0.0.0.0',
 };
