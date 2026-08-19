@@ -91,12 +91,12 @@ contagem no lobby.
 
 **Cair não é sair.** No `disconnect` o assento não é liberado: `markUserDisconnected`
 o marca (`TableSeat.disconnected`, público) e derruba o `ready` — com o pronto de pé
-a mão seguinte começaria sem o jogador na frente da tela e travaria, porque ainda não
-existe relógio de ação. Uma conexão nova do mesmo usuário desfaz tudo isso já no
+a mão seguinte começaria sem o jogador na frente da tela, e ele perderia os blinds
+sem estar lá. Uma conexão nova do mesmo usuário desfaz tudo isso já no
 `registerTableHandlers`, antes de qualquer `table:join`. Quem libera o assento de vez
 é o `RECONNECT_GRACE_MS` (45s) em `table.handlers.ts`, que aí sim chama
-`unseatUserEverywhere` — o socket não sabe em que mesa o jogador estava. O prazo é
-curto de propósito: enquanto ele corre, a mesa espera pela vez de quem sumiu.
+`unseatUserEverywhere` — o socket não sabe em que mesa o jogador estava. Enquanto o
+prazo corre a mesa não fica parada: o relógio da vez joga pelo ausente.
 
 Do lado do cliente, a `TableScene` cobre a mesa com o aviso "Reconectando..."
 (`ui/dialog.ts`) enquanto o socket está fora, e refaz o `table:join` a cada `connect`
@@ -204,5 +204,25 @@ fichas na mesa não muda.
 Pronto também: queda e volta do jogador — assento guardado por 45s, aviso de
 reconexão no cliente e retorno à mesa depois de uma recarga da página.
 
-Ainda não existe: relógio de ação (uma mesa espera para sempre por quem não joga),
-histórico de mãos e persistência — reiniciar o servidor zera tudo.
+### O relógio da vez
+
+`TURN_TIMEOUT_MS` (25s, em `table.registry.ts`) limita cada vez. Estourado o prazo,
+`applyTurnTimeout` joga pelo jogador: **passa quando dá para passar e desiste quando
+há aposta na mesa** — nunca gasta ficha de quem não está na frente da tela. A ação
+sai como qualquer outra, com `ActionTakenPayload.timedOut` ligado para a mesa saber
+o que aconteceu.
+
+A divisão segue a mesma das remoções por queda: o registry guarda o prazo
+(`Table.turnDeadline`, horário absoluto) e decide a jogada; quem acorda sozinho e
+avisa a sala é `syncTurnTimer` em `table.handlers.ts`, um `setTimeout` por mesa,
+reagendado depois de tudo que mexe na mão. Como o prazo é absoluto, reagendar não
+estende a vez de ninguém.
+
+No `PublicHandState` o prazo viaja como **quanto falta** (`turnEndsInMs`), não como
+horário: o relógio do celular pode estar minutos fora do relógio do servidor, e a
+diferença viraria um contador errado. O cliente conta a partir do que recebeu, no
+`update()` da `TableScene` — o anel do assento e a linha do rodapé são as duas
+únicas coisas que mudam sem evento nenhum, e mexem só nos objetos já desenhados
+(refazer a cena a cada segundo engoliria o toque de quem está com o dedo no botão).
+
+Ainda não existe: histórico de mãos e persistência — reiniciar o servidor zera tudo.

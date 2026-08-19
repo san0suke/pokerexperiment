@@ -45,6 +45,12 @@ interface Table {
   hand: HandRuntime | null;
   /** Dealer da última mão, para o botão girar na próxima. */
   lastDealerSeat: number | null;
+  /**
+   * Instante (ms) em que a vez atual expira. `null` fora da mão ou quando não há
+   * ninguém para agir. Guardado como horário absoluto, e não como o que falta,
+   * para que reemitir o estado não estenda o prazo de quem está pensando.
+   */
+  turnDeadline: number | null;
 }
 
 /**
@@ -54,6 +60,25 @@ interface Table {
  * Quando o saldo existir, é daqui que ele passa a sair.
  */
 const BUY_IN = 1000;
+
+/**
+ * Quanto tempo cada jogador tem para agir. Estourado o prazo, o servidor joga por
+ * ele: passa quando dá para passar e desiste quando há aposta na mesa — a escolha
+ * que não custa fichas de quem não está lá.
+ *
+ * Sem isto, uma mesa parava para sempre esperando quem fechou a aba, e o prazo de
+ * reconexão de 45s não resolvia: ele só corre para quem o socket caiu, não para
+ * quem está conectado e não joga.
+ */
+export const TURN_TIMEOUT_MS = 25_000;
+
+/**
+ * Folga na comparação do prazo: o `setTimeout` do Node pode acordar um fio de
+ * milissegundo antes da hora, e sem a folga o disparo legítimo seria recusado
+ * como adiantado — a mesa travaria justamente no caso que o relógio existe para
+ * destravar.
+ */
+const CLOCK_TOLERANCE_MS = 50;
 
 const tables = new Map<string, Table>();
 
@@ -67,6 +92,7 @@ function seedTable(id: string, name: string, smallBlind: number, bigBlind: numbe
     seats: new Map(),
     hand: null,
     lastDealerSeat: null,
+    turnDeadline: null,
   });
 }
 
@@ -115,7 +141,19 @@ function clearHandFromSeats(table: Table): void {
   }
 }
 
-function toPublicHand(hand: HandRuntime): PublicHandState {
+/**
+ * Recomeça a contagem da vez. Chamado a cada mudança na mão — começo, ação,
+ * desistência forçada —, porque qualquer uma delas passa a vez para alguém, mesmo
+ * que seja o mesmo assento de novo (heads-up: quem fala por último no pré-flop
+ * fala primeiro no flop).
+ */
+function restartTurnClock(table: Table): void {
+  const hand = table.hand;
+  table.turnDeadline =
+    hand && !hand.finished && hand.turnSeat !== null ? Date.now() + TURN_TIMEOUT_MS : null;
+}
+
+function toPublicHand(table: Table, hand: HandRuntime): PublicHandState {
   return {
     dealerSeat: hand.dealerSeat,
     smallBlindSeat: hand.smallBlindSeat,
@@ -126,7 +164,15 @@ function toPublicHand(hand: HandRuntime): PublicHandState {
     turnSeat: hand.turnSeat,
     currentBet: hand.currentBet,
     minRaiseTo: hand.currentBet + hand.minRaise,
+    turnDurationMs: TURN_TIMEOUT_MS,
+    turnEndsInMs:
+      table.turnDeadline === null ? null : Math.max(0, table.turnDeadline - Date.now()),
   };
+}
+
+/** Quando a vez atual expira, para a camada de socket agendar o relógio. */
+export function getTurnDeadline(tableId: string): number | null {
+  return tables.get(tableId)?.turnDeadline ?? null;
 }
 
 export function getTableState(tableId: string): TableState | null {
@@ -156,7 +202,7 @@ export function getTableState(tableId: string): TableState | null {
         disconnected: seat?.disconnected ?? false,
       };
     }),
-    hand: table.hand ? toPublicHand(table.hand) : null,
+    hand: table.hand ? toPublicHand(table, table.hand) : null,
   };
 }
 
@@ -271,6 +317,7 @@ function closeHand(table: Table): HandResultPayload | null {
   };
 
   table.hand = null;
+  table.turnDeadline = null;
   clearHandFromSeats(table);
   for (const seat of table.seats.values()) {
     seat.ready = false;
@@ -299,8 +346,14 @@ export function unseatUser(tableId: string, userId: string): UnseatResult | null
   // Abandonar a mesa no meio da mão é desistir da mão: o que já foi apostado fica
   // no pote, como numa mesa de verdade.
   if (table.hand?.players.has(seatIndex)) {
+    // Só quem estava com a vez passa a bola: o relógio de quem já estava pensando
+    // não recomeça porque um vizinho levantou da mesa.
+    const hadTheTurn = table.hand.turnSeat === seatIndex;
     foldSeat(table.hand, seatIndex);
     syncSeatsFromHand(table);
+    if (hadTheTurn) {
+      restartTurnClock(table);
+    }
   }
 
   table.seats.delete(seatIndex);
@@ -394,6 +447,7 @@ export function startTableHand(tableId: string): StartedHandPrivates[] | null {
 
   table.hand = hand;
   table.lastDealerSeat = hand.dealerSeat;
+  restartTurnClock(table);
   clearHandFromSeats(table);
   syncSeatsFromHand(table);
   for (const seat of table.seats.values()) {
@@ -438,12 +492,65 @@ export function applyPlayerAction(
     return { error: 'Você não está sentado nesta mesa' };
   }
 
-  const outcome = applyAction(table.hand, seatIndex, action, amount);
+  return runAction(table, table.hand, seatIndex, action, amount, false);
+}
+
+/**
+ * O prazo do jogador da vez acabou: o servidor joga por ele. Passa quando dá para
+ * passar, desiste quando há aposta na mesa — nunca gasta ficha de quem não está
+ * na frente da tela.
+ */
+export function applyTurnTimeout(tableId: string): PlayerActionResult {
+  const table = tables.get(tableId);
+  if (!table?.hand || table.turnDeadline === null) {
+    return { error: 'Não há vez correndo nesta mesa' };
+  }
+
+  // O jogador pode ter agido entre o disparo do relógio e esta chamada; aí a vez
+  // já é de outro, com prazo novo, e não há nada a forçar.
+  if (Date.now() < table.turnDeadline - CLOCK_TOLERANCE_MS) {
+    return { error: 'Ainda há tempo nesta vez' };
+  }
+
+  const seatIndex = table.hand.turnSeat;
+  if (seatIndex === null || !table.seats.has(seatIndex)) {
+    // Prazo vencido sem ninguém para agir não deveria acontecer, mas deixá-lo de
+    // pé faria a camada de socket reagendar o despertador para agora, sem parar.
+    restartTurnClock(table);
+    return { error: 'Não há vez correndo nesta mesa' };
+  }
+
+  const legal = legalActions(table.hand, seatIndex);
+  const result = runAction(
+    table,
+    table.hand,
+    seatIndex,
+    legal?.canCheck ? 'check' : 'fold',
+    undefined,
+    true,
+  );
+  if (result.error) {
+    restartTurnClock(table);
+  }
+  return result;
+}
+
+/** Aplica a ação — pedida pelo jogador ou forçada pelo relógio — e acerta a mesa. */
+function runAction(
+  table: Table,
+  hand: HandRuntime,
+  seatIndex: number,
+  action: PlayerAction,
+  amount: number | undefined,
+  timedOut: boolean,
+): PlayerActionResult {
+  const outcome = applyAction(hand, seatIndex, action, amount);
   if (!outcome.ok) {
     return { error: outcome.reason ?? 'Ação inválida' };
   }
 
   syncSeatsFromHand(table);
+  restartTurnClock(table);
 
   const taken: ActionTakenPayload = {
     seatIndex,
@@ -452,9 +559,10 @@ export function applyPlayerAction(
     // Aumento se anuncia pelo total ("aumentou para 40"); o resto, pelo que saiu do stack.
     amount: (action === 'raise' ? outcome.total : outcome.amount) ?? 0,
     allIn: outcome.allIn ?? false,
+    timedOut,
   };
 
-  if (table.hand.finished) {
+  if (hand.finished) {
     const ended = closeHand(table);
     return ended ? { taken, ended } : { taken };
   }

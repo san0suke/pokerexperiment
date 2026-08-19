@@ -1,8 +1,10 @@
 import {
   applyPlayerAction,
+  applyTurnTimeout,
   canStartHand,
   getPrivateHandState,
   getTableState,
+  getTurnDeadline,
   markUserConnected,
   markUserDisconnected,
   seatUser,
@@ -22,9 +24,9 @@ const roomFor = (tableId: string) => `table:${tableId}`;
  *
  * Cair no celular é rotina: a tela apaga, o app vai para segundo plano, o wi-fi
  * troca de ponto. Liberar o assento na hora significava perder as fichas e a mão
- * por causa de um túnel. O preço é o outro lado: enquanto o prazo corre, a mesa
- * espera pela vez de quem sumiu, porque ainda não existe relógio de ação. Daí o
- * prazo ser curto.
+ * por causa de um túnel. Enquanto o prazo corre, a mesa não fica refém de quem
+ * sumiu: o relógio da vez joga por ele a cada 25s, então ele volta com o assento
+ * e as fichas, mas perde as mãos em que não estava.
  */
 const RECONNECT_GRACE_MS = 45_000;
 
@@ -35,12 +37,59 @@ const RECONNECT_GRACE_MS = 45_000;
  */
 const pendingRemovals = new Map<string, NodeJS.Timeout>();
 
+/**
+ * Relógio da vez, um por mesa. Fica aqui pelo mesmo motivo das remoções: o prazo
+ * quem guarda é o registry, mas quem precisa acordar sozinho e avisar a sala do
+ * que aconteceu é esta camada.
+ */
+const turnTimers = new Map<string, NodeJS.Timeout>();
+
 function cancelPendingRemoval(userId: string): void {
   const timer = pendingRemovals.get(userId);
   if (timer) {
     clearTimeout(timer);
     pendingRemovals.delete(userId);
   }
+}
+
+/**
+ * Acerta o despertador da mesa com o prazo que o registry guarda. Chamado depois
+ * de tudo que mexe na mão; como o prazo é um horário absoluto, reagendar não
+ * estende a vez de ninguém.
+ */
+function syncTurnTimer(io: PokerServer, tableId: string): void {
+  clearTimeout(turnTimers.get(tableId));
+  turnTimers.delete(tableId);
+
+  const deadline = getTurnDeadline(tableId);
+  if (deadline === null) {
+    return;
+  }
+
+  const timer = setTimeout(
+    () => {
+      turnTimers.delete(tableId);
+
+      const result = applyTurnTimeout(tableId);
+      if (result.taken) {
+        io.to(roomFor(tableId)).emit('hand:action-taken', result.taken);
+      }
+      if (result.ended) {
+        io.to(roomFor(tableId)).emit('hand:ended', result.ended);
+      }
+      if (!result.error) {
+        emitTableState(io, tableId);
+      }
+      // Mesmo quando o disparo foi recusado por adiantado, o próximo prazo precisa
+      // de despertador — senão a mesa fica sem relógio até a ação seguinte.
+      syncTurnTimer(io, tableId);
+    },
+    Math.max(0, deadline - Date.now()),
+  );
+
+  // Uma mesa esperando não é motivo para o processo não terminar.
+  timer.unref?.();
+  turnTimers.set(tableId, timer);
 }
 
 function emitTableState(io: PokerServer, tableId: string): void {
@@ -83,6 +132,7 @@ async function startHandIfEveryoneIsReady(io: PokerServer, tableId: string): Pro
   // cliente tem o que desenhar na frente do jogador.
   await deliverHoleCards(io, tableId, privates);
   emitTableState(io, tableId);
+  syncTurnTimer(io, tableId);
 }
 
 function announceUnseat(io: PokerServer, result: UnseatResult): void {
@@ -91,6 +141,7 @@ function announceUnseat(io: PokerServer, result: UnseatResult): void {
     io.to(roomFor(result.tableId)).emit('hand:ended', result.ended);
   }
   emitTableState(io, result.tableId);
+  syncTurnTimer(io, result.tableId);
 }
 
 /** Passado o prazo, quem caiu sai como se tivesse clicado em sair. */
@@ -175,6 +226,7 @@ export function registerTableHandlers(io: PokerServer, socket: PokerSocket): voi
       io.to(roomFor(tableId)).emit('hand:ended', result.ended);
     }
     emitTableState(io, tableId);
+    syncTurnTimer(io, tableId);
   });
 
   socket.on('table:leave', async ({ tableId }) => {

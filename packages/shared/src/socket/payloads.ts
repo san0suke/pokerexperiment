@@ -67,6 +67,15 @@ export interface PublicHandState {
   currentBet: number;
   /** Menor valor aceito num aumento, já pelas regras da rodada. */
   minRaiseTo: number;
+  /** Quanto tempo cada jogador tem para agir, contado do começo da vez dele. */
+  turnDurationMs: number;
+  /**
+   * Quanto falta da vez atual, em milissegundos, no instante em que este estado
+   * saiu do servidor. É um prazo relativo, e não um horário: o relógio do celular
+   * pode estar minutos fora do relógio do servidor, e a diferença viraria um
+   * contador errado. O cliente conta a partir do que recebeu.
+   */
+  turnEndsInMs: number | null;
 }
 
 /** Ações do poker. `raise` cobre também apostar do zero e o all-in. */
@@ -87,6 +96,8 @@ export interface ActionTakenPayload {
   /** Em `raise`, o total para o qual se aumentou; nas outras, o que saiu do stack. */
   amount: number;
   allIn: boolean;
+  /** O tempo acabou e o servidor jogou pelo jogador (passa, ou desiste se não der). */
+  timedOut: boolean;
 }
 
 export interface ShowdownHand {

@@ -36,6 +36,11 @@ const SEAT_CARD_OVERLAP_RATIO = 0.3;
  */
 const STUCK_OFFLINE_MS = 15_000;
 
+/** Faltando isto para a vez acabar, o contador vira vermelho. */
+const URGENT_TURN_MS = 5_000;
+/** Espessura do anel do relógio e o quanto ele fica fora do círculo do assento. */
+const TURN_RING_WIDTH = 5;
+
 /**
  * Mesa de poker: assentos em volta do feltro, cartas comunitárias, pote e os
  * controles de aposta de quem tem a vez.
@@ -73,6 +78,20 @@ export class TableScene extends Phaser.Scene {
   private offlineForTooLong = false;
   private offlineTimer?: Phaser.Time.TimerEvent;
   private root!: Phaser.GameObjects.Container;
+  /**
+   * Quando a vez atual acaba, no relógio deste aparelho. O servidor manda quanto
+   * falta, não um horário: o relógio do celular pode estar minutos fora do dele.
+   */
+  private turnEndsAt: number | null = null;
+  private turnDurationMs = 1;
+  /** Anel que esvazia em volta de quem tem a vez, e onde ele foi desenhado. */
+  private turnRing?: Phaser.GameObjects.Graphics;
+  private turnRingSpot?: { x: number; y: number; radius: number };
+  /** Linha "Sua vez · 12s" do rodapé, com o texto fixo que antecede os segundos. */
+  private turnNote?: Phaser.GameObjects.Text;
+  private turnNotePrefix = '';
+  /** Último valor escrito no rodapé, para não refazer o texto a cada quadro. */
+  private shownSeconds = -1;
 
   constructor() {
     super('TableScene');
@@ -88,6 +107,7 @@ export class TableScene extends Phaser.Scene {
     this.raising = false;
     this.offline = false;
     this.offlineForTooLong = false;
+    this.turnEndsAt = null;
   }
 
   create(): void {
@@ -113,6 +133,7 @@ export class TableScene extends Phaser.Scene {
       if (state.hand?.turnSeat !== this.mySeat()?.seatIndex) {
         this.raising = false;
       }
+      this.syncTurnClock(state);
       this.build();
     });
 
@@ -208,6 +229,7 @@ export class TableScene extends Phaser.Scene {
     socket.emit('table:join', { tableId: this.tableId }, (state) => {
       if (state) {
         this.state = state;
+        this.syncTurnClock(state);
         this.build();
       }
     });
@@ -280,6 +302,71 @@ export class TableScene extends Phaser.Scene {
     };
   }
 
+  /**
+   * Acerta o relógio da vez com o que veio do servidor. O prazo chega em quanto
+   * falta, e não como horário, justamente para não depender do relógio do
+   * aparelho — aqui ele vira um horário local, que só este cliente lê.
+   */
+  private syncTurnClock(state: TableState): void {
+    const hand = state.hand;
+    if (!hand || hand.turnEndsInMs === null) {
+      this.turnEndsAt = null;
+      return;
+    }
+    this.turnDurationMs = Math.max(1, hand.turnDurationMs);
+    this.turnEndsAt = Date.now() + hand.turnEndsInMs;
+  }
+
+  private turnMillisLeft(): number | null {
+    return this.turnEndsAt === null ? null : Math.max(0, this.turnEndsAt - Date.now());
+  }
+
+  /**
+   * O contador é a única parte da mesa que muda sozinha, sem evento nenhum. Ele
+   * anda aqui, mexendo só no anel e no texto já desenhados — refazer a cena
+   * inteira a cada segundo custaria caro no celular e ainda engoliria o toque de
+   * quem estivesse com o dedo num botão.
+   */
+  update(): void {
+    const remaining = this.turnMillisLeft();
+    if (remaining === null) {
+      return;
+    }
+
+    this.drawTurnRing(remaining);
+
+    const seconds = Math.ceil(remaining / 1000);
+    if (this.turnNote && seconds !== this.shownSeconds) {
+      this.shownSeconds = seconds;
+      this.turnNote.setText(`${this.turnNotePrefix} · ${seconds}s`);
+      this.turnNote.setColor(remaining <= URGENT_TURN_MS ? '#ff8a80' : '#a8ccbf');
+    }
+  }
+
+  /** Anel que esvazia em volta do assento da vez, no sentido do relógio. */
+  private drawTurnRing(remaining: number): void {
+    const ring = this.turnRing;
+    const spot = this.turnRingSpot;
+    if (!ring || !spot) {
+      return;
+    }
+
+    ring.clear();
+    const fraction = Phaser.Math.Clamp(remaining / this.turnDurationMs, 0, 1);
+    if (fraction <= 0) {
+      return;
+    }
+
+    const start = -Math.PI / 2;
+    ring.lineStyle(
+      dp(this.layout, TURN_RING_WIDTH),
+      remaining <= URGENT_TURN_MS ? 0xff8a80 : 0x6ee7a8,
+    );
+    ring.beginPath();
+    ring.arc(spot.x, spot.y, spot.radius, start, start + fraction * Math.PI * 2, false);
+    ring.strokePath();
+  }
+
   private act(action: 'fold' | 'check' | 'call' | 'raise', amount?: number): void {
     this.raising = false;
     getSocket().emit('hand:action', { tableId: this.tableId, action, amount });
@@ -290,6 +377,12 @@ export class TableScene extends Phaser.Scene {
     this.layout = readLayout(this.scale);
     this.root?.destroy(true);
     this.root = this.add.container(0, 0);
+    // O `destroy` levou junto o anel e o texto do contador: as referências
+    // antigas apontam para objetos mortos até a cena redesenhá-los.
+    this.turnRing = undefined;
+    this.turnRingSpot = undefined;
+    this.turnNote = undefined;
+    this.shownSeconds = -1;
 
     const headerBottom = this.buildHeader();
     const footerTop = this.buildFooter();
@@ -378,8 +471,11 @@ export class TableScene extends Phaser.Scene {
       const options = this.myOptions();
       if (options) {
         top = this.raising ? this.buildRaiseControls(top) : this.buildActionControls(top);
+        top = this.buildTurnNote(top, 'Sua vez');
       } else if (seat.folded) {
         top = this.buildFooterNote(top, 'Você desistiu desta mão');
+      } else if (state.hand !== null && state.hand.turnSeat !== null) {
+        top = this.buildTurnNote(top, this.waitingForLabel());
       } else {
         top = this.buildFooterNote(top, this.waitingForLabel());
       }
@@ -605,6 +701,35 @@ export class TableScene extends Phaser.Scene {
     return label.y - label.height;
   }
 
+  /**
+   * Linha do rodapé que carrega o contador. Nasce já com os segundos certos para
+   * não piscar um valor velho no primeiro quadro; daí em diante quem a atualiza é
+   * o `update`.
+   */
+  private buildTurnNote(bottom: number, prefix: string): number {
+    const remaining = this.turnMillisLeft();
+    if (remaining === null) {
+      return this.buildFooterNote(bottom, prefix);
+    }
+
+    this.turnNotePrefix = prefix;
+    this.shownSeconds = Math.ceil(remaining / 1000);
+
+    const { width, padX } = this.layout;
+    const note = this.add
+      .text(width / 2, bottom, `${prefix} · ${this.shownSeconds}s`, {
+        fontSize: `${px(this.layout, 15, 12)}px`,
+        color: remaining <= URGENT_TURN_MS ? '#ff8a80' : '#a8ccbf',
+        align: 'center',
+        wordWrap: { width: width - padX * 2 },
+      })
+      .setOrigin(0.5, 1);
+
+    this.root.add(note);
+    this.turnNote = note;
+    return note.y - note.height;
+  }
+
   private buildFooterNote(bottom: number, text: string): number {
     const { width, padX } = this.layout;
 
@@ -788,6 +913,17 @@ export class TableScene extends Phaser.Scene {
       return;
     }
 
+    // O anel do relógio fica por fora do círculo, para não disputar espaço com o
+    // nome nem com as cartas. Ele é a única pista de tempo para quem só assiste a
+    // vez do outro.
+    if (this.isTurn(seat) && this.turnEndsAt !== null) {
+      const ring = this.add.graphics();
+      this.turnRing = ring;
+      this.turnRingSpot = { x, y, radius: seatRadius + dp(this.layout, TURN_RING_WIDTH) };
+      this.root.add(ring);
+      this.drawTurnRing(this.turnMillisLeft() ?? 0);
+    }
+
     // Cartas do assento: de costas enquanto a mão corre e abertas no showdown,
     // para todo mundo que chegou vivo ao fim da mão. Vão depois do círculo e
     // acima dele — desenhadas antes, ficavam escondidas atrás do nome.
@@ -909,7 +1045,12 @@ export class TableScene extends Phaser.Scene {
 
 /** "bob aumentou para 40" — o que a mesa ouviria numa mesa de verdade. */
 function describeAction(payload: ActionTakenPayload): string {
-  const { username, action, amount, allIn } = payload;
+  const { username, action, amount, allIn, timedOut } = payload;
+  if (timedOut) {
+    return action === 'fold'
+      ? `${username} não jogou a tempo e desistiu`
+      : `${username} não jogou a tempo e passou`;
+  }
   if (allIn && action !== 'fold') {
     return `${username} foi de all-in (${amount})`;
   }
