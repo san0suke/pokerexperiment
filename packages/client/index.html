@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"
+      content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <title>Poker</title>
     <style>
@@ -40,19 +40,35 @@
        * canvas gets letterboxed on a phone.
        */
       #ui-overlay {
-        position: absolute;
-        inset: 0;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
         display: none;
         pointer-events: none;
         /*
-         * The scroll container. It has a definite height (the viewport), which is
-         * what makes overflow work — putting overflow on .screen instead does
-         * nothing, because min-height with auto height just grows past the fold
-         * and the bottom of the form becomes unreachable on a short screen or
-         * once the mobile keyboard opens.
+         * The scroll container, and it must be sized in dvh.
+         *
+         * `inset: 0` (or 100vh) resolves against the LARGE viewport — the height
+         * the page would have with the browser chrome hidden. On a phone the
+         * address bar and toolbars are really there, so the box ends up taller
+         * than what the player can see, the content fits that phantom height,
+         * scrollHeight equals clientHeight, and the browser sees nothing to
+         * scroll — while the bottom of the form sits behind the chrome,
+         * unreachable. Landscape makes it obvious because the chrome eats a big
+         * share of an already short viewport.
+         *
+         * dvh tracks the chrome as it shows and hides, so overflow is real.
          */
+        height: 100vh; /* oldest fallback */
+        height: 100dvh; /* Safari 15.4+ / Chrome 108+ */
+        /* Measured from visualViewport — see services/viewport-height.ts. */
+        height: var(--app-height, 100dvh);
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
+        /* Keep vertical panning available and stop the scroll from chaining to the page. */
+        touch-action: pan-y;
+        overscroll-behavior: contain;
       }
       #ui-overlay.active {
         display: block;
@@ -169,6 +185,18 @@
         .card {
           gap: 8px;
           padding: 16px;
+        }
+      }
+
+      /*
+       * Below this the title is the difference between the form fitting and the
+       * player having to scroll a login box. The fields are self-explanatory and
+       * scrolling still works for the taller registration form, so drop it.
+       * Touch targets stay at their full size — those are not worth shrinking.
+       */
+      @media (max-height: 400px) {
+        .brand {
+          display: none;
         }
       }
     </style>
