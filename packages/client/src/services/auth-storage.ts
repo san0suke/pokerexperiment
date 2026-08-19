@@ -24,6 +24,19 @@ export function getUser(): PublicUser | null {
   }
 }
 
+/**
+ * Atualiza só o saldo guardado. O servidor manda o número novo a cada mão que
+ * fecha; sem isto o lobby continuaria mostrando o saldo do login até o próximo
+ * login, e o jogador veria fichas que não tem mais.
+ */
+export function saveChips(chips: number): void {
+  const user = getUser();
+  if (!user) {
+    return;
+  }
+  localStorage.setItem(USER_KEY, JSON.stringify({ ...user, chips }));
+}
+
 export function clearSession(): void {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);

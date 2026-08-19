@@ -63,6 +63,13 @@ export class LobbyScene extends Phaser.Scene {
 
     socket.on('lobby:tables-updated', (tables) => this.setTables(tables));
 
+    // O saldo do cabeçalho é o da conta, e ele muda enquanto se joga: quem volta
+    // da mesa precisa ver o número de agora, não o do login. Quem guarda o valor
+    // é o `socket-client`; aqui só se redesenha. O handler é nomeado porque o
+    // `off` sem ele levaria junto o do `socket-client`, que grava o saldo.
+    const redrawBalance = (): void => this.build();
+    socket.on('user:balance', redrawBalance);
+
     // A lista só chega por broadcast quando algo muda: depois de uma queda ela
     // ficaria parada no que era antes até alguém sentar ou sair de alguma mesa.
     socket.on('connect', () => {
@@ -76,6 +83,7 @@ export class LobbyScene extends Phaser.Scene {
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       socket.off('lobby:tables-updated');
+      socket.off('user:balance', redrawBalance);
       socket.off('connect_error');
       socket.off('connect');
       this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);

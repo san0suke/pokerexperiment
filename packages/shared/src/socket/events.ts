@@ -1,6 +1,7 @@
 import type {
   ActionTakenPayload,
   AuthenticatedUser,
+  BalanceUpdatedPayload,
   HandResultPayload,
   JoinTablePayload,
   LeaveTablePayload,
@@ -35,6 +36,8 @@ export interface ServerToClientEvents {
   'hand:action-taken': (payload: ActionTakenPayload) => void;
   /** Fim da mão: quem levou o pote e, se houve showdown, as cartas abertas. */
   'hand:ended': (payload: HandResultPayload) => void;
+  /** Saldo da conta depois que a mesa mexeu nele. Só para o socket do dono. */
+  'user:balance': (payload: BalanceUpdatedPayload) => void;
   'server:error': (error: SocketErrorPayload) => void;
 }
 

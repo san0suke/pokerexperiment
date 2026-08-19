@@ -162,3 +162,13 @@ export interface SocketErrorPayload {
   code: string;
   message: string;
 }
+
+/**
+ * Saldo da conta do jogador, empurrado quando a mesa o altera.
+ *
+ * O stack do assento já viaja no `TableState`, mas o saldo guardado no cliente
+ * (o que o lobby mostra) veio do login e envelheceria a cada mão jogada.
+ */
+export interface BalanceUpdatedPayload {
+  chips: number;
+}

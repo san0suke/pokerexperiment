@@ -394,7 +394,7 @@ export class TableScene extends Phaser.Scene {
         createModalMessage(this, this.layout, {
           title: 'Reconectando...',
           detail: this.offlineForTooLong
-            ? 'A conexão não voltou. Seu assento fica guardado por pouco tempo — depois disso a mesa o libera.'
+            ? 'A conexão não voltou. Seu assento está guardado e a mão continua sem você, passando ou desistindo a cada 25s. Voltar ao lobby agora desiste da mão.'
             : 'Seu assento e suas fichas estão guardados. É só um instante.',
           action: this.offlineForTooLong
             ? { label: 'Voltar ao lobby', onClick: () => this.backToLobby() }
@@ -575,9 +575,12 @@ export class TableScene extends Phaser.Scene {
   private buildReadyControls(bottom: number, seat: TableSeat): number {
     const { width, padX, ui } = this.layout;
 
+    // Sem fichas não há o que combinar: o stack é o saldo da conta e não existe
+    // recompra. O servidor pensa igual — `playableSeats` deixa de fora quem está
+    // zerado —, então um botão de pronto aqui só prometeria uma mão que não vem.
     const broke = seat.chips === 0;
     const button = createButton(this, {
-      label: seat.ready ? 'Não estou pronto' : broke ? 'Recomprar e jogar' : 'Estou pronto',
+      label: broke ? 'Sem fichas' : seat.ready ? 'Não estou pronto' : 'Estou pronto',
       x: width / 2,
       y: bottom,
       layout: this.layout,
@@ -585,16 +588,23 @@ export class TableScene extends Phaser.Scene {
       anchorX: 0.5,
       anchorY: 1,
       minWidth: Math.min(width - padX * 2, Math.round(220 * ui)),
-      variant: seat.ready ? 'ghost' : 'primary',
-      onClick: () => {
-        getSocket().emit('table:set-ready', { tableId: this.tableId, ready: !seat.ready });
-      },
+      variant: broke ? 'disabled' : seat.ready ? 'ghost' : 'primary',
+      onClick: broke
+        ? undefined
+        : () => {
+            getSocket().emit('table:set-ready', { tableId: this.tableId, ready: !seat.ready });
+          },
     });
 
-    const seated = this.occupiedSeats().filter((other) => other.chips > 0 || other.ready);
+    // Mesma conta do servidor em `playableSeats`: ausente não entra na mão, então
+    // não pode aparecer no "x de y prontos" — a mão nunca começaria.
+    const seated = this.occupiedSeats().filter(
+      (other) => !other.disconnected && (other.chips > 0 || other.ready),
+    );
     const readyCount = seated.filter((other) => other.ready).length;
-    const hint =
-      seated.length < 2
+    const hint = broke
+      ? 'Suas fichas acabaram. O que está na mesa é o saldo da sua conta — não há recompra.'
+      : seated.length < 2
         ? 'Esperando mais um jogador para começar'
         : `${readyCount} de ${seated.length} prontos — a mão começa quando todos estiverem`;
 
@@ -890,7 +900,7 @@ export class TableScene extends Phaser.Scene {
     const circle = this.add
       .circle(x, y, seatRadius, occupied ? (seat.folded ? 0x123f33 : 0x1f7a5c) : 0x0e3f31)
       .setStrokeStyle(dp(this.layout, this.isTurn(seat) ? 5 : 3), this.seatStrokeColor(seat));
-    if (seat.folded) {
+    if (seat.folded || seat.disconnected) {
       circle.setAlpha(0.55);
     }
 
@@ -997,10 +1007,11 @@ export class TableScene extends Phaser.Scene {
   private seatDetail(seat: TableSeat, showdown?: string): string {
     const parts = [`${seat.chips}`];
 
-    // Quem caiu continua com o assento por alguns segundos: os outros precisam
-    // saber por que a mesa está esperando.
+    // Quem caiu continua com o assento, e a mesa precisa saber disso: é por ele
+    // que o relógio da vez vai passar ou desistir, e é por ele que a mão seguinte
+    // vai começar sem um jogador.
     if (seat.disconnected) {
-      parts.push('caiu');
+      parts.push('ausente');
     }
 
     const hand = this.state?.hand;
@@ -1036,6 +1047,9 @@ export class TableScene extends Phaser.Scene {
   }
 
   private seatDetailColor(seat: TableSeat): string {
+    if (seat.disconnected) {
+      return '#7d9c90';
+    }
     if (this.state?.status === 'waiting' && !this.result) {
       return seat.ready ? '#8ee6b0' : '#a8ccbf';
     }

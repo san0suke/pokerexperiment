@@ -21,7 +21,8 @@ async function auth(username, email, password) {
     });
   }
   const data = await res.json();
-  return data.token;
+  // O saldo vem junto: é com ele que o jogador senta, e não com um buy-in fixo.
+  return { token: data.token, chips: data.user.chips };
 }
 
 function connect(token) {
@@ -53,8 +54,8 @@ try {
 }
 
 // 3. Two authenticated clients.
-const tokenA = await auth('alice', 'alice@example.com', 'secret123');
-const tokenB = await auth('bob', 'bob@example.com', 'secret123');
+const { token: tokenA, chips: chipsA } = await auth('alice', 'alice@example.com', 'secret123');
+const { token: tokenB, chips: chipsB } = await auth('bob', 'bob@example.com', 'secret123');
 const alice = await connect(tokenA);
 const bob = await connect(tokenB);
 check('accepts valid JWT (2 clients)', alice.connected && bob.connected);
@@ -82,9 +83,16 @@ const stateB = await new Promise((r) => bob.emit('table:join', { tableId: 'table
 check('both players seated', stateB?.seats.filter((s) => s.user !== null).length === 2);
 const joinedUser = await aliceSawJoin;
 check('alice notified of bob joining', joinedUser.username === 'bob');
+// O stack é o saldo da conta: uma segunda rodada deste script encontra alice e bob
+// com o que sobrou da primeira, e não com 1000 de novo.
 check(
-  'everyone buys in with 1000 chips',
-  stateB?.seats.filter((s) => s.user !== null).every((s) => s.chips === 1000),
+  'everyone sits with their account balance',
+  stateB?.seats.find((s) => s.user?.username === 'alice')?.chips === chipsA &&
+    stateB?.seats.find((s) => s.user?.username === 'bob')?.chips === chipsB,
+  `alice ${chipsA}, bob ${chipsB}`,
+);
+const startingStacks = new Map(
+  stateB.seats.filter((s) => s.user !== null).map((s) => [s.seatIndex, s.chips]),
 );
 
 // 7. Joining a table that does not exist.
@@ -122,10 +130,14 @@ bob.emit('table:set-ready', { tableId: 'table-1', ready: true });
 const playing = await handStarted;
 check('hand starts when everyone is ready', playing !== null);
 check('blinds are posted', playing?.hand?.pot === 15, `pot ${playing?.hand?.pot}`);
+const stackAfterBlind = (seatIndex) =>
+  playing?.seats.find((s) => s.seatIndex === seatIndex)?.chips;
 check(
   'blinds come out of the stacks',
-  playing?.seats.find((s) => s.seatIndex === playing.hand.smallBlindSeat)?.chips === 995 &&
-    playing?.seats.find((s) => s.seatIndex === playing.hand.bigBlindSeat)?.chips === 990,
+  stackAfterBlind(playing.hand.smallBlindSeat) ===
+    startingStacks.get(playing.hand.smallBlindSeat) - 5 &&
+    stackAfterBlind(playing.hand.bigBlindSeat) ===
+      startingStacks.get(playing.hand.bigBlindSeat) - 10,
 );
 check(
   'heads-up: the dealer is the small blind',
@@ -219,7 +231,10 @@ check('showdown names the made hand', Boolean(handEnded?.showdown[0]?.descriptio
 check('the winner is named', Boolean(handEnded?.winners[0]?.username));
 check('pot equals the two big blinds', handEnded?.pot === 20, `pot ${handEnded?.pot}`);
 check('table returns to waiting', state.status === 'waiting');
-check('chips are conserved', state.seats.filter((s) => s.user).reduce((sum, s) => sum + s.chips, 0) === 2000);
+check(
+  'chips are conserved',
+  state.seats.filter((s) => s.user).reduce((sum, s) => sum + s.chips, 0) === chipsA + chipsB,
+);
 
 // 10. Second hand: the blinds move, and leaving mid-hand hands the pot over.
 const firstDealer = playing.hand.dealerSeat;

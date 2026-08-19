@@ -30,7 +30,11 @@ interface Seat {
   inHand: boolean;
   folded: boolean;
   allIn: boolean;
-  /** Socket caiu: o assento fica guardado até o prazo de reconexão acabar. */
+  /**
+   * Socket caiu. O assento continua dele — a mesa mostra "ausente" e a vida
+   * segue: nas mãos em andamento o relógio da vez joga por ele; nas seguintes
+   * ele fica de fora, sem pagar blind, até voltar e marcar pronto.
+   */
   disconnected: boolean;
 }
 
@@ -54,14 +58,6 @@ interface Table {
 }
 
 /**
- * Stack que cada jogador recebe ao sentar, igual em qualquer mesa. Não há loja
- * nem saldo por jogador ainda: o `chips` do `User` no Postgres não é debitado,
- * então o buy-in é fixo e some quando o servidor reinicia, igual aos assentos.
- * Quando o saldo existir, é daqui que ele passa a sair.
- */
-const BUY_IN = 1000;
-
-/**
  * Quanto tempo cada jogador tem para agir. Estourado o prazo, o servidor joga por
  * ele: passa quando dá para passar e desiste quando há aposta na mesa — a escolha
  * que não custa fichas de quem não está lá.
@@ -71,6 +67,7 @@ const BUY_IN = 1000;
  * quem está conectado e não joga.
  */
 export const TURN_TIMEOUT_MS = 25_000;
+
 
 /**
  * Folga na comparação do prazo: o `setTimeout` do Node pode acordar um fio de
@@ -215,8 +212,49 @@ function findSeatIndex(table: Table, userId: string): number | null {
   return null;
 }
 
-/** Seats a user at the first free seat. Returns null if the table is missing or full. */
-export function seatUser(tableId: string, user: AuthenticatedUser): TableState | null {
+/**
+ * Em que mesa o jogador já está sentado, se estiver em alguma.
+ *
+ * O saldo da conta é um só e ele viaja inteiro para a mesa: sentar em duas ao
+ * mesmo tempo faria as mesmas fichas existirem em dois lugares, e a mão que
+ * acabasse por último apagaria o resultado da outra ao gravar o saldo.
+ */
+export function getSeatedTableId(userId: string): string | null {
+  for (const table of tables.values()) {
+    if (findSeatIndex(table, userId) !== null) {
+      return table.id;
+    }
+  }
+  return null;
+}
+
+/**
+ * Stack de cada jogador sentado, para a camada de socket gravar na conta. Só faz
+ * sentido chamar fora de uma mão: no meio dela parte das fichas está no pote.
+ */
+export function getTableBalances(tableId: string): { userId: string; chips: number }[] {
+  const table = tables.get(tableId);
+  if (!table) {
+    return [];
+  }
+  return [...table.seats.values()].map((seat) => ({ userId: seat.user.id, chips: seat.chips }));
+}
+
+/**
+ * Senta o jogador no primeiro assento livre com o stack que ele trouxe.
+ *
+ * O stack vem de fora — é o saldo da conta, que só a camada de socket sabe ler —
+ * porque o registry não fala com o banco. Sentar de novo (reconexão, segunda aba)
+ * cai no assento que já existe e **ignora** o valor recebido: as fichas de quem
+ * está jogando são as da mesa, não as do último saldo gravado.
+ *
+ * `null` quando a mesa não existe ou está lotada.
+ */
+export function seatUser(
+  tableId: string,
+  user: AuthenticatedUser,
+  chips: number,
+): TableState | null {
   const table = tables.get(tableId);
   if (!table) {
     return null;
@@ -234,7 +272,7 @@ export function seatUser(tableId: string, user: AuthenticatedUser): TableState |
     table.seats.set(freeSeat, {
       user,
       ready: false,
-      chips: BUY_IN,
+      chips: Math.max(0, Math.trunc(chips)),
       bet: 0,
       committed: 0,
       inHand: false,
@@ -253,10 +291,13 @@ export function seatUser(tableId: string, user: AuthenticatedUser): TableState |
 /**
  * O socket caiu: os assentos dele ficam guardados, marcados para os outros verem.
  *
- * Quem some não pode continuar "pronto" — com o pronto de pé, a mão seguinte
- * começaria sem ele na frente da tela e travaria na primeira vez que a vez
- * chegasse no assento vazio, porque ainda não existe relógio de ação. Quem
- * libera o assento de vez é a camada de socket, passado o prazo de reconexão.
+ * O assento **não** é liberado — nem agora nem depois. A mesa não some porque a
+ * internet oscilou: quem volta encontra o próprio assento, as próprias fichas e
+ * os vizinhos onde estavam, ausentes ou não. Só o próprio jogador se levanta,
+ * pelo `table:leave`.
+ *
+ * Quem some perde o "pronto": a mão seguinte começa sem ele, e sem cobrar blind
+ * de quem não está lá.
  */
 export function markUserDisconnected(userId: string): string[] {
   const affected: string[] = [];
@@ -328,8 +369,19 @@ function closeHand(table: Table): HandResultPayload | null {
 
 export interface UnseatResult {
   tableId: string;
+  /**
+   * Preenchido quando a saída foi no meio da mão: sair é desistir, e a mesa
+   * precisa ouvir isso como ouviria qualquer fold — senão o assento apenas some e
+   * ninguém entende por que o jogo seguiu sem ele.
+   */
+  folded: ActionTakenPayload | null;
   /** Preenchido quando a saída encerrou a mão (os outros desistiram ou sobrou um). */
   ended: HandResultPayload | null;
+  /**
+   * Stack com que ele levantou, para voltar à conta. `null` quando ele nem estava
+   * sentado — aí não há nada a gravar, e gravar zero apagaria o saldo dele.
+   */
+  chips: number | null;
 }
 
 export function unseatUser(tableId: string, userId: string): UnseatResult | null {
@@ -340,22 +392,41 @@ export function unseatUser(tableId: string, userId: string): UnseatResult | null
 
   const seatIndex = findSeatIndex(table, userId);
   if (seatIndex === null) {
-    return { tableId, ended: null };
+    return { tableId, folded: null, ended: null, chips: null };
   }
 
   // Abandonar a mesa no meio da mão é desistir da mão: o que já foi apostado fica
-  // no pote, como numa mesa de verdade.
-  if (table.hand?.players.has(seatIndex)) {
+  // no pote, como numa mesa de verdade, e o jogo segue para os outros.
+  let folded: ActionTakenPayload | null = null;
+  const player = table.hand?.players.get(seatIndex);
+  if (table.hand && player) {
+    // Quem já tinha desistido não desiste duas vezes.
+    const wasStillIn = !player.folded;
     // Só quem estava com a vez passa a bola: o relógio de quem já estava pensando
     // não recomeça porque um vizinho levantou da mesa.
     const hadTheTurn = table.hand.turnSeat === seatIndex;
+
     foldSeat(table.hand, seatIndex);
     syncSeatsFromHand(table);
     if (hadTheTurn) {
       restartTurnClock(table);
     }
+    if (wasStillIn) {
+      folded = {
+        seatIndex,
+        username: table.seats.get(seatIndex)!.user.username,
+        action: 'fold',
+        amount: 0,
+        allIn: false,
+        timedOut: false,
+      };
+    }
   }
 
+  // O stack sai da mesa junto com ele: é o que a conta recebe de volta. Lido
+  // antes do `delete`, e depois do fold — o que ele já tinha apostado ficou no
+  // pote e não volta.
+  const chips = table.seats.get(seatIndex)!.chips;
   table.seats.delete(seatIndex);
 
   let ended: HandResultPayload | null = null;
@@ -363,21 +434,7 @@ export function unseatUser(tableId: string, userId: string): UnseatResult | null
     ended = closeHand(table);
   }
 
-  return { tableId, ended };
-}
-
-/** Used on disconnect, when we don't know which table the socket was at. */
-export function unseatUserEverywhere(userId: string): UnseatResult[] {
-  const affected: UnseatResult[] = [];
-  for (const table of tables.values()) {
-    if (findSeatIndex(table, userId) !== null) {
-      const result = unseatUser(table.id, userId);
-      if (result) {
-        affected.push(result);
-      }
-    }
-  }
-  return affected;
+  return { tableId, folded, ended, chips };
 }
 
 /** Marca/desmarca o pronto. Ignorado durante uma mão — aí não há o que combinar. */
@@ -394,18 +451,23 @@ export function setReady(tableId: string, userId: string, ready: boolean): Table
 
   const seat = table.seats.get(seatIndex)!;
   seat.ready = ready;
-  // Recompra automática de quem quebrou: sem loja nem saldo, travar o assento só
-  // deixaria a mesa parada. Quando existir saldo por jogador, isto vira a compra.
-  if (ready && seat.chips === 0) {
-    seat.chips = BUY_IN;
-  }
+  // Não há recompra: o stack é o saldo da conta, e quem quebrou quebrou. O pronto
+  // dele não trava a mesa — `playableSeats` deixa de fora quem está sem fichas.
 
   return getTableState(tableId);
 }
 
-/** Assentos que podem jogar a próxima mão: sentados e com fichas. */
+/**
+ * Assentos que podem jogar a próxima mão: sentados, com fichas e presentes.
+ *
+ * Ausente não entra na mão. Ele nem poderia — o `ready` cai junto com o socket —,
+ * mas deixá-lo na conta travava a mesa inteira: `canStartHand` exige que **todos**
+ * os que podem jogar estejam prontos, e um assento ausente nunca fica pronto. Com
+ * ele de fora, quem está na frente da tela continua jogando e ele volta na mão
+ * seguinte à volta dele.
+ */
 function playableSeats(table: Table): [number, Seat][] {
-  return [...table.seats.entries()].filter(([, seat]) => seat.chips > 0);
+  return [...table.seats.entries()].filter(([, seat]) => seat.chips > 0 && !seat.disconnected);
 }
 
 /** Todos os que podem jogar estão prontos, e são pelo menos dois. */
