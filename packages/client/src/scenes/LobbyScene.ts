@@ -3,12 +3,15 @@ import type { LobbyTableSummary } from '@poker/shared';
 import { getSocket, disconnectSocket } from '../services/socket-client.js';
 import { clearSession, getUser } from '../services/auth-storage.js';
 import { createButton } from '../ui/button.js';
-import { readLayout, px, space, type Layout } from '../ui/layout.js';
+import { readLayout, dp, px, space, type Layout } from '../ui/layout.js';
 import { fitText } from '../ui/text.js';
 
-/** Largura máxima da lista: em telas largas as filas não viram faixas gigantes. */
+/**
+ * Largura máxima da lista, em pixels de CSS: em telas largas as filas não viram
+ * faixas gigantes. Como toda medida crua, passa por `dp()` antes de ser usada.
+ */
 const MAX_LIST_WIDTH = 760;
-/** Arrasto maior que isso é rolagem, não toque numa mesa. */
+/** Arrasto maior que isso (em pixels de CSS) é rolagem, não toque numa mesa. */
 const DRAG_THRESHOLD = 10;
 
 /**
@@ -97,7 +100,7 @@ export class LobbyScene extends Phaser.Scene {
 
   /** Desenha o cabeçalho e devolve a altura ocupada por ele. */
   private buildHeader(): number {
-    const { width, padX, padTop, ui, portrait } = this.layout;
+    const { width, padX, padTop, portrait } = this.layout;
     const user = getUser();
 
     const title = this.add
@@ -112,7 +115,7 @@ export class LobbyScene extends Phaser.Scene {
       label: 'Sair',
       x: width - padX,
       y: padTop,
-      ui,
+      layout: this.layout,
       fontSize: 16,
       anchorX: 1,
       onClick: () => {
@@ -158,7 +161,7 @@ export class LobbyScene extends Phaser.Scene {
   private buildList(top: number): void {
     const { width, height, padX, padBottom } = this.layout;
 
-    this.listWidth = Math.min(width - padX * 2, MAX_LIST_WIDTH);
+    this.listWidth = Math.min(width - padX * 2, dp(this.layout, MAX_LIST_WIDTH));
     this.listLeft = Math.round((width - this.listWidth) / 2);
     this.listTop = top;
     this.listHeight = Math.max(0, height - padBottom - top);
@@ -180,7 +183,7 @@ export class LobbyScene extends Phaser.Scene {
       return;
     }
 
-    const rowHeight = Math.max(72, Math.round(84 * this.layout.ui));
+    const rowHeight = space(this.layout, 84, 72);
     const gap = space(this.layout, 12, 8);
 
     this.tables.forEach((table, index) => {
@@ -205,21 +208,21 @@ export class LobbyScene extends Phaser.Scene {
     y: number,
     rowHeight: number,
   ): Phaser.GameObjects.Container {
-    const { ui, portrait } = this.layout;
+    const { portrait } = this.layout;
     const isFull = table.seatedCount >= table.maxSeats;
     const innerPad = space(this.layout, 16, 12);
 
     const background = this.add.graphics();
     background.fillStyle(0x134f3c, 1);
-    background.fillRoundedRect(0, 0, this.listWidth, rowHeight, 12);
-    background.lineStyle(2, isFull ? 0x1a5a46 : 0x1e6b52, 1);
-    background.strokeRoundedRect(0, 0, this.listWidth, rowHeight, 12);
+    background.fillRoundedRect(0, 0, this.listWidth, rowHeight, dp(this.layout, 12));
+    background.lineStyle(dp(this.layout, 2), isFull ? 0x1a5a46 : 0x1e6b52, 1);
+    background.strokeRoundedRect(0, 0, this.listWidth, rowHeight, dp(this.layout, 12));
 
     const join = createButton(this, {
       label: isFull ? 'Lotada' : 'Entrar',
       x: this.listWidth - innerPad,
       y: rowHeight / 2,
-      ui,
+      layout: this.layout,
       fontSize: 17,
       anchorX: 1,
       anchorY: 0.5,
@@ -277,7 +280,7 @@ export class LobbyScene extends Phaser.Scene {
     // Soltou o dedo depois de arrastar: era rolagem, não escolha de mesa. Só vale
     // quando a lista realmente rola — com todas as mesas visíveis não há rolagem
     // possível, e aí o tremido normal do dedo cancelaria o toque à toa.
-    if (this.maxScroll > 0 && this.dragDistance > DRAG_THRESHOLD) {
+    if (this.maxScroll > 0 && this.dragDistance > dp(this.layout, DRAG_THRESHOLD)) {
       return;
     }
     this.scene.start('TableScene', { tableId });
@@ -332,20 +335,20 @@ export class LobbyScene extends Phaser.Scene {
 
     const trackHeight = this.listHeight;
     const thumbHeight = Math.max(
-      32,
+      dp(this.layout, 32),
       Math.round((trackHeight * trackHeight) / (trackHeight + this.maxScroll)),
     );
     const travel = trackHeight - thumbHeight;
     const thumbY = this.listTop + (this.scrollTop / this.maxScroll) * travel;
     // Na margem, se ela couber; senão encostada na borda de dentro das filas.
-    const gutter = this.layout.padX >= 12;
-    const x = this.listLeft + this.listWidth + (gutter ? 4 : -6);
+    const gutter = this.layout.padX >= dp(this.layout, 12);
+    const x = this.listLeft + this.listWidth + dp(this.layout, gutter ? 4 : -6);
 
     const bar = this.add.graphics();
     bar.fillStyle(0xffffff, 0.12);
-    bar.fillRoundedRect(x, this.listTop, 4, trackHeight, 2);
+    bar.fillRoundedRect(x, this.listTop, dp(this.layout, 4), trackHeight, dp(this.layout, 2));
     bar.fillStyle(0xf5d47a, 0.7);
-    bar.fillRoundedRect(x, thumbY, 4, thumbHeight, 2);
+    bar.fillRoundedRect(x, thumbY, dp(this.layout, 4), thumbHeight, dp(this.layout, 2));
     this.scrollbar = bar;
   }
 }

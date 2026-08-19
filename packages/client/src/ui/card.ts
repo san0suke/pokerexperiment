@@ -49,7 +49,10 @@ export function createCardFace(
 ): Phaser.GameObjects.Container {
   const { card, x, y, width } = config;
   const height = Math.round(width * CARD_ASPECT);
-  const radius = Math.max(4, Math.round(width * 0.12));
+  const radius = Math.max(2, Math.round(width * 0.12));
+  // Traço proporcional à carta: `width` vem em unidades do canvas, então uma
+  // espessura fixa sumiria nas telas de densidade alta.
+  const stroke = Math.max(1, Math.round(width * 0.035));
   const left = -width / 2;
   const top = -height / 2;
 
@@ -57,14 +60,14 @@ export function createCardFace(
   if (card) {
     background.fillStyle(0xfdfbf5, 1);
     background.fillRoundedRect(left, top, width, height, radius);
-    background.lineStyle(2, 0x1b1b1b, 0.35);
+    background.lineStyle(stroke, 0x1b1b1b, 0.35);
     background.strokeRoundedRect(left, top, width, height, radius);
   } else {
     background.fillStyle(0x1d3f8f, 1);
     background.fillRoundedRect(left, top, width, height, radius);
-    background.lineStyle(2, 0xf5d47a, 0.8);
+    background.lineStyle(stroke, 0xf5d47a, 0.8);
     background.strokeRoundedRect(left, top, width, height, radius);
-    background.lineStyle(2, 0xffffff, 0.18);
+    background.lineStyle(stroke, 0xffffff, 0.18);
     background.strokeRoundedRect(
       left + width * 0.14,
       top + height * 0.1,

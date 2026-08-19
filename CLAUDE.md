@@ -111,16 +111,28 @@ por todos os handlers — nunca confie em id de usuário vindo no payload.
 
 ### Cliente: layout sem resolução fixa
 
-O Phaser roda em `Scale.RESIZE` — o canvas tem o tamanho real da área visível, não há
-resolução de projeto. Consequências para **toda cena nova**:
+O Phaser roda em `Scale.NONE` com o tamanho gerenciado por
+`services/canvas-scale.ts` — o canvas tem a área visível **em pixels do aparelho** e o
+`zoom` do Phaser o encolhe de volta no CSS. Não há resolução de projeto. O `RESIZE`
+resolvia o tamanho, mas dimensiona o canvas em pixels de CSS e ignora o `zoom`: numa
+tela de densidade 2 ou 3 o navegador amplia uma imagem menor que a tela e o jogo
+parece de baixa resolução. Consequências para **toda cena nova**:
 
 - Leia as medidas com `readLayout(this.scale)` (`ui/layout.ts`) e posicione tudo a
   partir de `width/height/portrait/short/ui/padX/...`; use `px()` e `space()` para
   fontes e espaçamentos proporcionais. Coordenadas fixas voltam a quebrar no celular.
+- **Tudo do `Layout` vem em unidades do canvas**, não em pixels de CSS: `ui` já traz a
+  densidade embutida, então `56 * ui` continua certo. Número cru vindo de fora — piso
+  de toque, limite de largura, espessura de traço — passa por `dp(layout, valor)`
+  antes de ser comparado ou somado. Esquecer disso deixa o elemento do tamanho de um
+  terço no celular.
+- `pixelArt: false` fica escrito na config: o Phaser o liga sozinho quando o zoom é
+  diferente de 1, e aí desliga o antialias.
 - Escute `Phaser.Scale.Events.RESIZE` e **reconstrua** a cena; remova o listener no
   `SHUTDOWN` (junto com os `socket.off`). Veja `LobbyScene`/`TableScene` como modelo.
-- Alvos de toque saem de `createButton` (`ui/button.ts`), que garante os 44px mínimos —
-  um `Text` interativo vira um alvo de poucos pixels no celular.
+- Alvos de toque saem de `createButton` (`ui/button.ts`), que recebe o `Layout` e
+  garante os 44px de CSS mínimos — um `Text` interativo vira um alvo de poucos pixels
+  no celular.
 - **`hitArea` de Container precisa vir deslocada.** O Phaser soma o `displayOrigin` do
   container (metade do tamanho) ao ponto local antes de testar a hitArea. Passar o
   mesmo retângulo usado para desenhar deixa a área clicável meio elemento acima e à

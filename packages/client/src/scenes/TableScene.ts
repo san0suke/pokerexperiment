@@ -4,7 +4,7 @@ import { getSocket } from '../services/socket-client.js';
 import { getUser } from '../services/auth-storage.js';
 import { createButton, type ButtonVariant } from '../ui/button.js';
 import { CARD_ASPECT, createCardFace } from '../ui/card.js';
-import { readLayout, px, space, type Layout } from '../ui/layout.js';
+import { readLayout, dp, px, space, type Layout } from '../ui/layout.js';
 import { fitText } from '../ui/text.js';
 
 interface TableSceneData {
@@ -17,11 +17,11 @@ interface ButtonSpec {
   onClick: () => void;
 }
 
-/** Abaixo desta largura o rótulo do botão de saída é encurtado. */
+/** Abaixo desta largura (em pixels de CSS) o rótulo do botão de saída encurta. */
 const WIDE_LABEL_MIN_WIDTH = 600;
 /** Quanto o oval pode ser mais comprido que largo (ou vice-versa). */
 const MAX_OVAL_RATIO = 1.7;
-/** Acima disso cabem todos os botões de aposta numa linha só. */
+/** Acima desta largura (em pixels de CSS) cabem todos os botões numa linha só. */
 const WIDE_CONTROLS_MIN_WIDTH = 560;
 /** Largura das cartas de um assento, em fração do raio do círculo. */
 const SEAT_CARD_WIDTH_RATIO = 0.66;
@@ -210,13 +210,13 @@ export class TableScene extends Phaser.Scene {
 
   /** Desenha o cabeçalho e devolve a altura ocupada por ele. */
   private buildHeader(): number {
-    const { width, padX, padTop, ui } = this.layout;
+    const { width, padX, padTop } = this.layout;
 
     const leave = createButton(this, {
-      label: width >= WIDE_LABEL_MIN_WIDTH ? 'Voltar ao lobby' : '← Lobby',
+      label: width >= dp(this.layout, WIDE_LABEL_MIN_WIDTH) ? 'Voltar ao lobby' : '← Lobby',
       x: width - padX,
       y: padTop,
-      ui,
+      layout: this.layout,
       fontSize: 16,
       anchorX: 1,
       onClick: () => {
@@ -384,7 +384,7 @@ export class TableScene extends Phaser.Scene {
       label: seat.ready ? 'Não estou pronto' : broke ? 'Recomprar e jogar' : 'Estou pronto',
       x: width / 2,
       y: bottom,
-      ui,
+      layout: this.layout,
       fontSize: 18,
       anchorX: 0.5,
       anchorY: 1,
@@ -427,7 +427,8 @@ export class TableScene extends Phaser.Scene {
   private buildButtonRows(specs: ButtonSpec[], bottom: number): number {
     const { width, padX, ui } = this.layout;
     const gap = space(this.layout, 8, 6);
-    const perRow = width >= WIDE_CONTROLS_MIN_WIDTH ? specs.length : Math.min(specs.length, 2);
+    const perRow =
+      width >= dp(this.layout, WIDE_CONTROLS_MIN_WIDTH) ? specs.length : Math.min(specs.length, 2);
 
     const rows: ButtonSpec[][] = [];
     for (let i = 0; i < specs.length; i += perRow) {
@@ -445,7 +446,7 @@ export class TableScene extends Phaser.Scene {
           label: spec.label,
           x: 0,
           y: rowBottom,
-          ui,
+          layout: this.layout,
           fontSize: 17,
           anchorX: 0.5,
           anchorY: 1,
@@ -473,7 +474,11 @@ export class TableScene extends Phaser.Scene {
   private buildHoleCards(bottom: number): number {
     const { width, padX, ui } = this.layout;
 
-    const cardWidth = Phaser.Math.Clamp(Math.round(width * 0.14), 40, Math.round(76 * ui));
+    const cardWidth = Phaser.Math.Clamp(
+      Math.round(width * 0.14),
+      dp(this.layout, 40),
+      Math.round(76 * ui),
+    );
     const cardHeight = Math.round(cardWidth * CARD_ASPECT);
     const gap = space(this.layout, 10, 6);
     const centerY = bottom - cardHeight / 2;
@@ -520,14 +525,18 @@ export class TableScene extends Phaser.Scene {
     const { width, padX } = this.layout;
 
     const areaWidth = width - padX * 2;
-    const areaHeight = Math.max(120, bottom - top);
+    const areaHeight = Math.max(dp(this.layout, 120), bottom - top);
     const centerX = width / 2;
     const centerY = top + areaHeight / 2;
 
     // Os assentos ficam sobre a borda do oval, então precisam do próprio raio de
     // folga para não vazarem da tela. No eixo Y sobra ainda o rótulo de fichas
     // desenhado abaixo do círculo.
-    const seatRadius = Phaser.Math.Clamp(Math.min(areaWidth, areaHeight) * 0.12, 20, 44);
+    const seatRadius = Phaser.Math.Clamp(
+      Math.min(areaWidth, areaHeight) * 0.12,
+      dp(this.layout, 20),
+      dp(this.layout, 44),
+    );
     const labelRoom = space(this.layout, 18, 14);
     // Acima do assento ficam as cartas e abaixo o rótulo de fichas; a folga é a
     // maior das duas, senão o showdown corta as cartas dos assentos de cima.
@@ -543,7 +552,7 @@ export class TableScene extends Phaser.Scene {
 
     const felt = this.add
       .ellipse(centerX, centerY, ringRadiusX * 1.76, ringRadiusY * 1.64, 0x14654c)
-      .setStrokeStyle(Math.max(4, Math.round(8 * this.layout.ui)), 0x5b3a1e);
+      .setStrokeStyle(space(this.layout, 8, 4), 0x5b3a1e);
     this.root.add(felt);
 
     this.buildCenter(centerX, centerY, ringRadiusX, ringRadiusY);
@@ -601,7 +610,7 @@ export class TableScene extends Phaser.Scene {
 
     const gap = space(this.layout, 6, 4);
     const cardWidth = Math.max(
-      24,
+      dp(this.layout, 24),
       Math.min(
         Math.round(56 * this.layout.ui),
         Math.floor((maxWidth - gap * (board.length - 1)) / board.length),
@@ -637,7 +646,7 @@ export class TableScene extends Phaser.Scene {
    * mesa usa isso para não empurrar os assentos de cima para fora da área.
    */
   private seatCardBox(seatRadius: number): { width: number; height: number; room: number } {
-    const width = Math.max(14, Math.round(seatRadius * SEAT_CARD_WIDTH_RATIO));
+    const width = Math.max(dp(this.layout, 14), Math.round(seatRadius * SEAT_CARD_WIDTH_RATIO));
     const height = Math.round(width * CARD_ASPECT);
     return { width, height, room: seatRadius * (1 - SEAT_CARD_OVERLAP_RATIO) + height };
   }
@@ -655,7 +664,7 @@ export class TableScene extends Phaser.Scene {
 
     const circle = this.add
       .circle(x, y, seatRadius, occupied ? (seat.folded ? 0x123f33 : 0x1f7a5c) : 0x0e3f31)
-      .setStrokeStyle(this.isTurn(seat) ? 5 : 3, this.seatStrokeColor(seat));
+      .setStrokeStyle(dp(this.layout, this.isTurn(seat) ? 5 : 3), this.seatStrokeColor(seat));
     if (seat.folded) {
       circle.setAlpha(0.55);
     }

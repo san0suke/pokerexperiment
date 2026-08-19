@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { MIN_TOUCH_SIZE } from './layout.js';
+import { MIN_TOUCH_SIZE, dp, px, space, type Layout } from './layout.js';
 
 export type ButtonVariant = 'primary' | 'ghost' | 'disabled';
 
@@ -7,8 +7,9 @@ export interface ButtonConfig {
   label: string;
   x: number;
   y: number;
-  /** Multiplicador vindo do `Layout`. */
-  ui?: number;
+  /** Medidas da tela: o botão desenha em unidades do canvas, como as cenas. */
+  layout: Layout;
+  /** Tamanho da fonte em pixels de CSS, antes da escala do `Layout`. */
   fontSize?: number;
   /** 0 = alinha pela esquerda, 0.5 = pelo centro, 1 = pela direita. */
   anchorX?: number;
@@ -33,8 +34,8 @@ const PALETTES: Record<ButtonVariant, Palette> = {
 
 /**
  * Botão de toque. Existe porque um `Text` interativo vira um alvo de poucos
- * pixels no celular: aqui o retângulo garante os 44px mínimos de altura e uma
- * área clicável folgada em volta do rótulo, em qualquer orientação.
+ * pixels no celular: aqui o retângulo garante os 44px de CSS mínimos de altura
+ * e uma área clicável folgada em volta do rótulo, em qualquer orientação.
  *
  * O container é posicionado em (x, y) e desenhado a partir das âncoras, então
  * dá para encostá-lo no canto direito sem medir o texto antes.
@@ -47,7 +48,7 @@ export function createButton(
     label,
     x,
     y,
-    ui = 1,
+    layout,
     anchorX = 0,
     anchorY = 0,
     minWidth = 0,
@@ -56,9 +57,10 @@ export function createButton(
   } = config;
 
   const palette = PALETTES[variant];
-  const fontSize = Math.max(13, Math.round((config.fontSize ?? 18) * ui));
-  const paddingX = Math.round(18 * ui);
-  const height = Math.max(MIN_TOUCH_SIZE, Math.round(fontSize * 2.4));
+  const fontSize = px(layout, config.fontSize ?? 18, 13);
+  const paddingX = space(layout, 18, 12);
+  const height = Math.max(dp(layout, MIN_TOUCH_SIZE), Math.round(fontSize * 2.4));
+  const strokeWidth = dp(layout, 2);
 
   const text = scene.add
     .text(0, 0, label, { fontSize: `${fontSize}px`, color: palette.text, fontStyle: 'bold' })
@@ -72,7 +74,7 @@ export function createButton(
   const background = scene.add.graphics();
   background.fillStyle(palette.fill, palette.fillAlpha);
   background.fillRoundedRect(left, top, width, height, radius);
-  background.lineStyle(2, palette.stroke, variant === 'primary' ? 1 : 0.7);
+  background.lineStyle(strokeWidth, palette.stroke, variant === 'primary' ? 1 : 0.7);
   background.strokeRoundedRect(left, top, width, height, radius);
 
   text.setPosition(left + width / 2, top + height / 2);
