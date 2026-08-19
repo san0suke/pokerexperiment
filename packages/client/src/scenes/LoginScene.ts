@@ -3,8 +3,14 @@ import { login, register } from '../services/api-client.js';
 import { getToken, saveSession } from '../services/auth-storage.js';
 
 /**
- * Login/registration form. Uses a DOM overlay rather than Phaser text inputs —
- * it gives us native keyboards on mobile once this is wrapped by Capacitor.
+ * Login/registration screen. Rendered entirely in the DOM overlay rather than in
+ * Phaser: real inputs give us the native keyboard on mobile (and inside Capacitor
+ * later), and keeping the title in the same layout as the form means they can
+ * never collide. Drawing the title on the canvas instead puts it in the
+ * letterboxed 1280x720 design space, which on a phone shrinks to a band in the
+ * middle of the screen — exactly where the form sits.
+ *
+ * Phaser only paints the felt background here.
  */
 export class LoginScene extends Phaser.Scene {
   private overlay!: HTMLElement;
@@ -22,13 +28,6 @@ export class LoginScene extends Phaser.Scene {
 
     const { width, height } = this.scale;
     this.add.rectangle(0, 0, width, height, 0x0b3d2e).setOrigin(0);
-    this.add
-      .text(width / 2, height / 2 - 180, 'POKER', {
-        fontSize: '64px',
-        fontStyle: 'bold',
-        color: '#f5d47a',
-      })
-      .setOrigin(0.5);
 
     this.overlay = document.getElementById('ui-overlay') as HTMLElement;
     this.overlay.innerHTML = this.formHtml();
@@ -43,37 +42,50 @@ export class LoginScene extends Phaser.Scene {
 
   private formHtml(): string {
     return `
-      <form id="auth-form" style="
-        display:flex;flex-direction:column;gap:12px;width:320px;padding:28px;
-        background:rgba(0,0,0,0.55);border-radius:12px;color:#fff;margin-top:120px;">
-        <div style="display:flex;gap:8px;">
-          <button type="button" data-mode="login" class="mode-btn" style="flex:1;padding:8px;">Entrar</button>
-          <button type="button" data-mode="register" class="mode-btn" style="flex:1;padding:8px;">Criar conta</button>
-        </div>
-        <input name="username" placeholder="Usuário" autocomplete="username" style="padding:10px;" />
-        <input name="email" placeholder="E-mail" autocomplete="email" style="padding:10px;display:none;" />
-        <input name="password" type="password" placeholder="Senha" autocomplete="current-password" style="padding:10px;" />
-        <button type="submit" style="padding:12px;background:#f5d47a;border:0;font-weight:bold;cursor:pointer;">
-          Entrar
-        </button>
-        <p id="auth-error" style="color:#ff8a80;margin:0;min-height:18px;font-size:13px;"></p>
-      </form>
+      <div class="screen">
+        <h1 class="brand">POKER</h1>
+        <form id="auth-form" class="card">
+          <div class="mode-switch" role="group" aria-label="Entrar ou criar conta">
+            <button type="button" class="mode-btn" data-mode="login" aria-pressed="true">Entrar</button>
+            <button type="button" class="mode-btn" data-mode="register" aria-pressed="false">Criar conta</button>
+          </div>
+          <input name="username" placeholder="Usuário" autocomplete="username"
+                 autocapitalize="none" autocorrect="off" aria-label="Usuário" />
+          <input name="email" type="email" placeholder="E-mail" autocomplete="email"
+                 autocapitalize="none" autocorrect="off" aria-label="E-mail" hidden />
+          <input name="password" type="password" placeholder="Senha"
+                 autocomplete="current-password" aria-label="Senha" />
+          <button type="submit" class="submit-btn">Entrar</button>
+          <p id="auth-error" class="form-error" role="alert"></p>
+        </form>
+      </div>
     `;
   }
 
   private bindForm(): void {
     const form = this.overlay.querySelector<HTMLFormElement>('#auth-form')!;
     const emailInput = form.querySelector<HTMLInputElement>('input[name="email"]')!;
+    const passwordInput = form.querySelector<HTMLInputElement>('input[name="password"]')!;
     const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
     const errorText = form.querySelector<HTMLParagraphElement>('#auth-error')!;
     let mode: 'login' | 'register' = 'login';
 
-    form.querySelectorAll<HTMLButtonElement>('.mode-btn').forEach((button) => {
+    const modeButtons = form.querySelectorAll<HTMLButtonElement>('.mode-btn');
+    modeButtons.forEach((button) => {
       button.addEventListener('click', () => {
         mode = button.dataset.mode as 'login' | 'register';
-        emailInput.style.display = mode === 'register' ? 'block' : 'none';
-        submitButton.textContent = mode === 'register' ? 'Criar conta' : 'Entrar';
+        const registering = mode === 'register';
+
+        emailInput.hidden = !registering;
+        emailInput.required = registering;
+        submitButton.textContent = registering ? 'Criar conta' : 'Entrar';
+        // Tells the password manager to offer a new password instead of a saved one.
+        passwordInput.autocomplete = registering ? 'new-password' : 'current-password';
         errorText.textContent = '';
+
+        modeButtons.forEach((other) =>
+          other.setAttribute('aria-pressed', String(other.dataset.mode === mode)),
+        );
       });
     });
 
