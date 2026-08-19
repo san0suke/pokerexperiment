@@ -1,19 +1,61 @@
 import Phaser from 'phaser';
-import type { TableState } from '@poker/shared';
+import type { ActionTakenPayload, Card, HandResultPayload, TableSeat, TableState } from '@poker/shared';
 import { getSocket } from '../services/socket-client.js';
+import { getUser } from '../services/auth-storage.js';
+import { createButton, type ButtonVariant } from '../ui/button.js';
+import { CARD_ASPECT, createCardFace } from '../ui/card.js';
+import { readLayout, px, space, type Layout } from '../ui/layout.js';
+import { fitText } from '../ui/text.js';
 
 interface TableSceneData {
   tableId: string;
 }
 
+interface ButtonSpec {
+  label: string;
+  variant: ButtonVariant;
+  onClick: () => void;
+}
+
+/** Abaixo desta largura o rótulo do botão de saída é encurtado. */
+const WIDE_LABEL_MIN_WIDTH = 600;
+/** Quanto o oval pode ser mais comprido que largo (ou vice-versa). */
+const MAX_OVAL_RATIO = 1.7;
+/** Acima disso cabem todos os botões de aposta numa linha só. */
+const WIDE_CONTROLS_MIN_WIDTH = 560;
+
 /**
- * Placeholder poker table: renders seats around a felt oval and keeps them in sync
- * with the server. Cards, chips and betting controls come in the next phase.
+ * Mesa de poker: assentos em volta do feltro, cartas comunitárias, pote e os
+ * controles de aposta de quem tem a vez.
+ *
+ * As duas cartas do rodapé são as únicas cartas reais que o cliente conhece
+ * durante a mão — chegam por `hand:private-state`, só para este socket. Os
+ * adversários aparecem com o verso até o showdown, quando o servidor manda as
+ * cartas de quem foi até o fim em `hand:ended`.
+ *
+ * Toda ação daqui é uma sugestão: o servidor revalida fold/check/call/raise e
+ * pode recusar. Os botões são montados a partir do estado público da mão, com as
+ * mesmas contas do servidor, só para não oferecer o que seria recusado.
+ *
+ * A mesa não tem tamanho fixo: o oval e os assentos são calculados a partir do
+ * espaço que sobra entre o cabeçalho e o rodapé, então em pé ele fica alto e
+ * estreito e deitado fica largo e baixo. Tudo é redesenhado quando o aparelho
+ * gira.
  */
 export class TableScene extends Phaser.Scene {
   private tableId!: string;
-  private seatGroup!: Phaser.GameObjects.Container;
-  private titleText!: Phaser.GameObjects.Text;
+  private layout!: Layout;
+  private state: TableState | null = null;
+  /** Minhas hole cards. Vazio fora da mão. */
+  private holeCards: Card[] = [];
+  /** Resultado da última mão, mostrado até a próxima começar. */
+  private result: HandResultPayload | null = null;
+  /** Última ação anunciada na mesa, para acompanhar o jogo. */
+  private lastAction = '';
+  private errorMessage = '';
+  /** O jogador abriu as opções de aumento. */
+  private raising = false;
+  private root!: Phaser.GameObjects.Container;
 
   constructor() {
     super('TableScene');
@@ -21,83 +63,726 @@ export class TableScene extends Phaser.Scene {
 
   init(data: TableSceneData): void {
     this.tableId = data.tableId;
+    this.state = null;
+    this.holeCards = [];
+    this.result = null;
+    this.lastAction = '';
+    this.errorMessage = '';
+    this.raising = false;
   }
 
   create(): void {
-    const { width, height } = this.scale;
-    this.add.rectangle(0, 0, width, height, 0x0b3d2e).setOrigin(0);
-    this.add.ellipse(width / 2, height / 2, 720, 380, 0x14654c).setStrokeStyle(8, 0x5b3a1e);
-
-    this.titleText = this.add.text(40, 30, 'Carregando mesa...', {
-      fontSize: '28px',
-      color: '#f5d47a',
-      fontStyle: 'bold',
-    });
-
-    this.seatGroup = this.add.container(0, 0);
+    this.build();
 
     const socket = getSocket();
 
-    socket.on('table:state', (state) => this.renderTable(state));
+    socket.on('table:state', (state) => {
+      const startedNewHand = state.status === 'playing' && this.state?.status !== 'playing';
+      this.state = state;
+      this.errorMessage = '';
+
+      if (startedNewHand) {
+        this.result = null;
+        this.lastAction = '';
+      }
+      // Fora da mão ninguém tem cartas; as do showdown ficam até a próxima mão.
+      if (state.status === 'waiting' && !this.result) {
+        this.holeCards = [];
+      }
+      if (state.hand?.turnSeat !== this.mySeat()?.seatIndex) {
+        this.raising = false;
+      }
+      this.build();
+    });
+
+    socket.on('hand:private-state', (privateState) => {
+      if (privateState.tableId !== this.tableId) {
+        return;
+      }
+      this.holeCards = privateState.holeCards;
+      this.result = null;
+      this.build();
+    });
+
+    socket.on('hand:action-taken', (payload) => {
+      this.lastAction = describeAction(payload);
+      this.build();
+    });
+
+    socket.on('hand:ended', (payload) => {
+      if (payload.tableId !== this.tableId) {
+        return;
+      }
+      this.result = payload;
+      this.lastAction = '';
+      this.raising = false;
+      this.build();
+    });
+
     socket.on('server:error', (error) => {
-      this.titleText.setText(error.message).setColor('#ff8a80');
+      this.errorMessage = error.message;
+      this.build();
     });
 
     socket.emit('table:join', { tableId: this.tableId }, (state) => {
       if (state) {
-        this.renderTable(state);
+        this.state = state;
+        this.build();
       }
     });
 
-    this.addLeaveButton(width, socket);
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       socket.off('table:state');
+      socket.off('hand:private-state');
+      socket.off('hand:action-taken');
+      socket.off('hand:ended');
       socket.off('server:error');
+      this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     });
   }
 
-  private addLeaveButton(width: number, socket: ReturnType<typeof getSocket>): void {
-    this.add
-      .text(width - 40, 40, 'Voltar ao lobby', { fontSize: '18px', color: '#cfe8dd' })
-      .setOrigin(1, 0)
-      .setInteractive({ useHandCursor: true })
-      .on('pointerup', () => {
-        socket.emit('table:leave', { tableId: this.tableId });
-        this.scene.start('LobbyScene');
-      });
+  private handleResize(): void {
+    this.build();
   }
 
-  private renderTable(state: TableState): void {
-    this.titleText.setText(state.name).setColor('#f5d47a');
-    this.seatGroup.removeAll(true);
+  /** Assento do jogador logado, ou null se ele não está sentado nesta mesa. */
+  private mySeat(): TableSeat | null {
+    const userId = getUser()?.id;
+    return this.state?.seats.find((seat) => seat.user?.id === userId) ?? null;
+  }
 
-    const centerX = this.scale.width / 2;
-    const centerY = this.scale.height / 2;
-    const radiusX = 400;
-    const radiusY = 230;
+  private occupiedSeats(): TableSeat[] {
+    return this.state?.seats.filter((seat) => seat.user !== null) ?? [];
+  }
 
-    state.seats.forEach((seat, index) => {
+  private seatOf(seatIndex: number): TableSeat | undefined {
+    return this.state?.seats.find((seat) => seat.seatIndex === seatIndex);
+  }
+
+  /**
+   * As mesmas contas que o servidor faz para validar a ação. Serve só para montar
+   * os botões — quem decide continua sendo o servidor.
+   */
+  private myOptions() {
+    const hand = this.state?.hand;
+    const seat = this.mySeat();
+    if (!hand || !seat || !seat.inHand || seat.folded || hand.turnSeat !== seat.seatIndex) {
+      return null;
+    }
+
+    const toCall = Math.max(0, hand.currentBet - seat.bet);
+    const maxRaiseTo = seat.bet + seat.chips;
+
+    return {
+      toCall,
+      callAmount: Math.min(toCall, seat.chips),
+      canCheck: toCall === 0,
+      canCall: toCall > 0 && seat.chips > 0,
+      canRaise: seat.chips > toCall && maxRaiseTo > hand.currentBet,
+      minRaiseTo: Math.min(hand.minRaiseTo, maxRaiseTo),
+      maxRaiseTo,
+      pot: hand.pot,
+      seat,
+    };
+  }
+
+  private act(action: 'fold' | 'check' | 'call' | 'raise', amount?: number): void {
+    this.raising = false;
+    getSocket().emit('hand:action', { tableId: this.tableId, action, amount });
+  }
+
+  /** Redesenha a mesa inteira com as medidas atuais da tela. */
+  private build(): void {
+    this.layout = readLayout(this.scale);
+    this.root?.destroy(true);
+    this.root = this.add.container(0, 0);
+
+    const headerBottom = this.buildHeader();
+    const footerTop = this.buildFooter();
+    this.buildTable(headerBottom + space(this.layout, 12, 8), footerTop - space(this.layout, 12, 8));
+  }
+
+  /** Desenha o cabeçalho e devolve a altura ocupada por ele. */
+  private buildHeader(): number {
+    const { width, padX, padTop, ui } = this.layout;
+
+    const leave = createButton(this, {
+      label: width >= WIDE_LABEL_MIN_WIDTH ? 'Voltar ao lobby' : '← Lobby',
+      x: width - padX,
+      y: padTop,
+      ui,
+      fontSize: 16,
+      anchorX: 1,
+      onClick: () => {
+        getSocket().emit('table:leave', { tableId: this.tableId });
+        this.scene.start('LobbyScene');
+      },
+    });
+
+    const label = this.state?.name ?? 'Carregando mesa...';
+    const title = this.add
+      .text(padX, padTop + leave.height / 2, label, {
+        fontSize: `${px(this.layout, 28, 18)}px`,
+        fontStyle: 'bold',
+        color: '#f5d47a',
+      })
+      .setOrigin(0, 0.5);
+    fitText(title, width - padX * 2 - leave.width - space(this.layout, 12, 8));
+
+    this.root.add([title, leave]);
+
+    let bottom = padTop + leave.height;
+
+    const message = this.errorMessage || this.lastAction;
+    if (message) {
+      const line = this.add
+        .text(padX, bottom + space(this.layout, 8, 6), message, {
+          fontSize: `${px(this.layout, 15, 12)}px`,
+          color: this.errorMessage ? '#ff8a80' : '#cfe8dd',
+          wordWrap: { width: width - padX * 2 },
+        })
+        .setOrigin(0, 0);
+      this.root.add(line);
+      bottom = line.y + line.height;
+    }
+
+    return bottom;
+  }
+
+  /**
+   * Rodapé: controles de aposta e as próprias cartas durante a mão, o
+   * pronto/não pronto entre as mãos. Devolve o topo da faixa ocupada.
+   */
+  private buildFooter(): number {
+    const { height, padBottom } = this.layout;
+    const bottom = height - padBottom;
+
+    const state = this.state;
+    const seat = this.mySeat();
+    if (!state || !seat) {
+      return bottom;
+    }
+
+    if (state.status === 'playing') {
+      if (!seat.inHand) {
+        return this.buildFooterNote(bottom, 'Você entra na próxima mão');
+      }
+
+      let top = bottom;
+      const options = this.myOptions();
+      if (options) {
+        top = this.raising ? this.buildRaiseControls(top) : this.buildActionControls(top);
+      } else if (seat.folded) {
+        top = this.buildFooterNote(top, 'Você desistiu desta mão');
+      } else {
+        top = this.buildFooterNote(top, this.waitingForLabel());
+      }
+
+      return this.buildHoleCards(top - space(this.layout, 8, 6));
+    }
+
+    return this.buildReadyControls(bottom, seat);
+  }
+
+  private waitingForLabel(): string {
+    const turnSeat = this.state?.hand?.turnSeat;
+    if (turnSeat === null || turnSeat === undefined) {
+      return 'Abrindo as cartas da mesa...';
+    }
+    const name = this.seatOf(turnSeat)?.user?.username ?? '?';
+    return `Vez de ${name}`;
+  }
+
+  /** Fold / passar ou pagar / aumentar. */
+  private buildActionControls(bottom: number): number {
+    const options = this.myOptions()!;
+    const specs: ButtonSpec[] = [
+      { label: 'Desistir', variant: 'ghost', onClick: () => this.act('fold') },
+    ];
+
+    if (options.canCheck) {
+      specs.push({ label: 'Passar', variant: 'primary', onClick: () => this.act('check') });
+    } else if (options.canCall) {
+      const allIn = options.callAmount >= options.seat.chips;
+      specs.push({
+        label: allIn ? `All-in ${options.callAmount}` : `Pagar ${options.callAmount}`,
+        variant: 'primary',
+        onClick: () => this.act('call'),
+      });
+    }
+
+    if (options.canRaise) {
+      specs.push({
+        label: options.toCall > 0 ? 'Aumentar' : 'Apostar',
+        variant: 'ghost',
+        onClick: () => {
+          this.raising = true;
+          this.build();
+        },
+      });
+    }
+
+    return this.buildButtonRows(specs, bottom);
+  }
+
+  /**
+   * Valores prontos de aumento em vez de um campo numérico: no celular, digitar
+   * ou arrastar um slider no meio da mão é o caminho mais lento até o erro.
+   */
+  private buildRaiseControls(bottom: number): number {
+    const options = this.myOptions()!;
+    const { minRaiseTo, maxRaiseTo, callAmount, pot, seat } = options;
+
+    const clamp = (value: number) =>
+      Phaser.Math.Clamp(Math.round(value), minRaiseTo, maxRaiseTo);
+    // Aposta do tamanho do pote: o pote já com o call pago, somado ao que falta cobrir.
+    const potAfterCall = pot + callAmount;
+    const candidates: [string, number][] = [
+      ['Mín', minRaiseTo],
+      ['½ pote', clamp(seat.bet + callAmount + potAfterCall / 2)],
+      ['Pote', clamp(seat.bet + callAmount + potAfterCall)],
+      ['All-in', maxRaiseTo],
+    ];
+
+    const seen = new Set<number>();
+    const specs: ButtonSpec[] = [];
+    for (const [label, value] of candidates) {
+      if (seen.has(value)) {
+        continue;
+      }
+      seen.add(value);
+      specs.push({
+        label: `${label} ${value}`,
+        variant: value === maxRaiseTo ? 'ghost' : 'primary',
+        onClick: () => this.act('raise', value),
+      });
+    }
+
+    specs.push({
+      label: 'Voltar',
+      variant: 'ghost',
+      onClick: () => {
+        this.raising = false;
+        this.build();
+      },
+    });
+
+    return this.buildButtonRows(specs, bottom);
+  }
+
+  private buildReadyControls(bottom: number, seat: TableSeat): number {
+    const { width, padX, ui } = this.layout;
+
+    const broke = seat.chips === 0;
+    const button = createButton(this, {
+      label: seat.ready ? 'Não estou pronto' : broke ? 'Recomprar e jogar' : 'Estou pronto',
+      x: width / 2,
+      y: bottom,
+      ui,
+      fontSize: 18,
+      anchorX: 0.5,
+      anchorY: 1,
+      minWidth: Math.min(width - padX * 2, Math.round(220 * ui)),
+      variant: seat.ready ? 'ghost' : 'primary',
+      onClick: () => {
+        getSocket().emit('table:set-ready', { tableId: this.tableId, ready: !seat.ready });
+      },
+    });
+
+    const seated = this.occupiedSeats().filter((other) => other.chips > 0 || other.ready);
+    const readyCount = seated.filter((other) => other.ready).length;
+    const hint =
+      seated.length < 2
+        ? 'Esperando mais um jogador para começar'
+        : `${readyCount} de ${seated.length} prontos — a mão começa quando todos estiverem`;
+
+    const status = this.add
+      .text(width / 2, bottom - button.height - space(this.layout, 8, 6), hint, {
+        fontSize: `${px(this.layout, 15, 12)}px`,
+        color: '#a8ccbf',
+        align: 'center',
+        wordWrap: { width: width - padX * 2 },
+      })
+      .setOrigin(0.5, 1);
+
+    this.root.add([button, status]);
+
+    let top = status.y - status.height;
+    if (this.holeCards.length > 0 && this.result) {
+      top = this.buildHoleCards(top - space(this.layout, 8, 6));
+    }
+    return top;
+  }
+
+  /**
+   * Distribui os botões em linhas centradas. Em telas estreitas quebra em duas
+   * linhas em vez de espremer os alvos de toque abaixo do mínimo.
+   */
+  private buildButtonRows(specs: ButtonSpec[], bottom: number): number {
+    const { width, padX, ui } = this.layout;
+    const gap = space(this.layout, 8, 6);
+    const perRow = width >= WIDE_CONTROLS_MIN_WIDTH ? specs.length : Math.min(specs.length, 2);
+
+    const rows: ButtonSpec[][] = [];
+    for (let i = 0; i < specs.length; i += perRow) {
+      rows.push(specs.slice(i, i + perRow));
+    }
+
+    let rowBottom = bottom;
+    // De baixo para cima: a última linha encosta na borda inferior.
+    for (const row of [...rows].reverse()) {
+      const available = width - padX * 2 - gap * (row.length - 1);
+      const target = Math.min(Math.round(180 * ui), Math.floor(available / row.length));
+
+      const buttons = row.map((spec) =>
+        createButton(this, {
+          label: spec.label,
+          x: 0,
+          y: rowBottom,
+          ui,
+          fontSize: 17,
+          anchorX: 0.5,
+          anchorY: 1,
+          minWidth: target,
+          variant: spec.variant,
+          onClick: spec.onClick,
+        }),
+      );
+
+      const totalWidth = buttons.reduce((sum, button) => sum + button.width, 0) + gap * (row.length - 1);
+      let x = (width - totalWidth) / 2;
+      for (const button of buttons) {
+        button.x = x + button.width / 2;
+        x += button.width + gap;
+      }
+
+      this.root.add(buttons);
+      rowBottom -= buttons[0].height + gap;
+    }
+
+    return rowBottom + gap;
+  }
+
+  /** As duas cartas do jogador, centradas acima da borda de baixo. */
+  private buildHoleCards(bottom: number): number {
+    const { width, padX, ui } = this.layout;
+
+    const cardWidth = Phaser.Math.Clamp(Math.round(width * 0.14), 40, Math.round(76 * ui));
+    const cardHeight = Math.round(cardWidth * CARD_ASPECT);
+    const gap = space(this.layout, 10, 6);
+    const centerY = bottom - cardHeight / 2;
+
+    // Cartas ainda não chegaram (reconexão no meio da mão): desenha o verso.
+    const cards: (Card | null)[] = this.holeCards.length === 2 ? this.holeCards : [null, null];
+
+    cards.forEach((card, index) => {
+      const offset = (index - (cards.length - 1) / 2) * (cardWidth + gap);
+      this.root.add(
+        createCardFace(this, { card, x: width / 2 + offset, y: centerY, width: cardWidth }),
+      );
+    });
+
+    const label = this.add
+      .text(width / 2, centerY - cardHeight / 2 - space(this.layout, 6, 4), 'Suas cartas', {
+        fontSize: `${px(this.layout, 13, 10)}px`,
+        color: '#a8ccbf',
+      })
+      .setOrigin(0.5, 1);
+    fitText(label, width - padX * 2);
+
+    this.root.add(label);
+    return label.y - label.height;
+  }
+
+  private buildFooterNote(bottom: number, text: string): number {
+    const { width, padX } = this.layout;
+
+    const note = this.add
+      .text(width / 2, bottom, text, {
+        fontSize: `${px(this.layout, 15, 12)}px`,
+        color: '#a8ccbf',
+        align: 'center',
+        wordWrap: { width: width - padX * 2 },
+      })
+      .setOrigin(0.5, 1);
+
+    this.root.add(note);
+    return note.y - note.height;
+  }
+
+  private buildTable(top: number, bottom: number): void {
+    const { width, padX } = this.layout;
+
+    const areaWidth = width - padX * 2;
+    const areaHeight = Math.max(120, bottom - top);
+    const centerX = width / 2;
+    const centerY = top + areaHeight / 2;
+
+    // Os assentos ficam sobre a borda do oval, então precisam do próprio raio de
+    // folga para não vazarem da tela. No eixo Y sobra ainda o rótulo de fichas
+    // desenhado abaixo do círculo.
+    const seatRadius = Phaser.Math.Clamp(Math.min(areaWidth, areaHeight) * 0.12, 20, 44);
+    const labelRoom = space(this.layout, 18, 14);
+    let ringRadiusX = Math.max(seatRadius, areaWidth / 2 - seatRadius);
+    let ringRadiusY = Math.max(seatRadius, areaHeight / 2 - seatRadius - labelRoom);
+
+    // Ocupar toda a área em pé transformaria a mesa num tubo, com os jogadores
+    // laterais espremidos contra as bordas da tela. O limite de proporção mantém
+    // o formato de mesa nas duas orientações; o que sobra vira respiro.
+    ringRadiusX = Math.min(ringRadiusX, ringRadiusY * MAX_OVAL_RATIO);
+    ringRadiusY = Math.min(ringRadiusY, ringRadiusX * MAX_OVAL_RATIO);
+
+    const felt = this.add
+      .ellipse(centerX, centerY, ringRadiusX * 1.76, ringRadiusY * 1.64, 0x14654c)
+      .setStrokeStyle(Math.max(4, Math.round(8 * this.layout.ui)), 0x5b3a1e);
+    this.root.add(felt);
+
+    this.buildCenter(centerX, centerY, ringRadiusX, ringRadiusY);
+
+    const seats = this.state?.seats ?? [];
+    seats.forEach((seat, index) => {
       // Start at the bottom of the oval so seat 0 faces the player.
-      const angle = Math.PI / 2 + (index / state.seats.length) * Math.PI * 2;
-      const x = centerX + Math.cos(angle) * radiusX;
-      const y = centerY + Math.sin(angle) * radiusY;
+      const angle = Math.PI / 2 + (index / seats.length) * Math.PI * 2;
+      const x = centerX + Math.cos(angle) * ringRadiusX;
+      const y = centerY + Math.sin(angle) * ringRadiusY;
+      this.buildSeat(seat, x, y, seatRadius);
+    });
+  }
 
-      const occupied = seat.user !== null;
-      const circle = this.add
-        .circle(x, y, 42, occupied ? 0x1f7a5c : 0x0e3f31)
-        .setStrokeStyle(3, occupied ? 0xf5d47a : 0x2c5b4c);
+  /** Miolo do feltro: cartas comunitárias, pote e o resultado da última mão. */
+  private buildCenter(
+    centerX: number,
+    centerY: number,
+    ringRadiusX: number,
+    ringRadiusY: number,
+  ): void {
+    const hand = this.state?.hand;
+    const maxWidth = ringRadiusX * 1.5;
 
-      const label = this.add
-        .text(x, y, occupied ? seat.user!.username : `Assento ${seat.seatIndex + 1}`, {
-          fontSize: '14px',
-          color: occupied ? '#ffffff' : '#7d9c90',
+    if (!hand) {
+      const lines = this.result ? describeResult(this.result) : ['Aguardando os jogadores'];
+      const text = this.add
+        .text(centerX, centerY, lines.join('\n'), {
+          fontSize: `${px(this.layout, 16, 12)}px`,
+          color: this.result ? '#f5d47a' : '#7fb8a2',
           align: 'center',
-          wordWrap: { width: 78 },
+          lineSpacing: space(this.layout, 4, 3),
+          wordWrap: { width: maxWidth },
         })
         .setOrigin(0.5);
+      this.root.add(text);
+      return;
+    }
 
-      this.seatGroup.add([circle, label]);
-    });
+    let potY = centerY;
+
+    if (hand.communityCards.length > 0) {
+      const gap = space(this.layout, 6, 4);
+      const cardWidth = Math.max(
+        24,
+        Math.min(
+          Math.round(56 * this.layout.ui),
+          Math.floor((maxWidth - gap * (hand.communityCards.length - 1)) / hand.communityCards.length),
+          Math.floor((ringRadiusY * 1.1) / CARD_ASPECT),
+        ),
+      );
+      const cardHeight = Math.round(cardWidth * CARD_ASPECT);
+      const boardY = centerY - cardHeight * 0.15;
+
+      hand.communityCards.forEach((card, index) => {
+        const offset = (index - (hand.communityCards.length - 1) / 2) * (cardWidth + gap);
+        this.root.add(
+          createCardFace(this, { card, x: centerX + offset, y: boardY, width: cardWidth }),
+        );
+      });
+
+      potY = boardY + cardHeight / 2 + space(this.layout, 12, 8);
+    }
+
+    const pot = this.add
+      .text(centerX, potY, `Pote: ${hand.pot}`, {
+        fontSize: `${px(this.layout, 20, 14)}px`,
+        fontStyle: 'bold',
+        color: '#f5d47a',
+      })
+      .setOrigin(0.5, hand.communityCards.length > 0 ? 0 : 0.5);
+    fitText(pot, maxWidth);
+    this.root.add(pot);
   }
+
+  private buildSeat(seat: TableSeat, x: number, y: number, seatRadius: number): void {
+    const occupied = seat.user !== null;
+    const shown = this.result?.showdown.find((entry) => entry.seatIndex === seat.seatIndex);
+    const isMine = seat.seatIndex === this.mySeat()?.seatIndex;
+
+    // Cartas do assento: abertas no showdown, de costas durante a mão.
+    const revealed: (Card | null)[] | null = shown
+      ? shown.holeCards
+      : seat.inHand && !seat.folded
+        ? [null, null]
+        : null;
+
+    if (revealed) {
+      const cardWidth = Math.round(seatRadius * (shown ? 0.7 : 0.62));
+      const spread = Math.round(cardWidth * 0.55);
+      revealed.forEach((card, index) => {
+        this.root.add(
+          createCardFace(this, {
+            card,
+            x: x + (index === 0 ? -spread : spread),
+            y: y - seatRadius * 0.78,
+            width: cardWidth,
+          }),
+        );
+      });
+    }
+
+    const circle = this.add
+      .circle(x, y, seatRadius, occupied ? (seat.folded ? 0x123f33 : 0x1f7a5c) : 0x0e3f31)
+      .setStrokeStyle(this.isTurn(seat) ? 5 : 3, this.seatStrokeColor(seat));
+    if (seat.folded) {
+      circle.setAlpha(0.55);
+    }
+
+    // Num assento pequeno "Assento 3" vira três linhas ilegíveis; só o número.
+    const emptyLabel = seatRadius >= 34 ? `Assento ${seat.seatIndex + 1}` : `${seat.seatIndex + 1}`;
+
+    const label = this.add
+      .text(x, y, occupied ? seat.user!.username : emptyLabel, {
+        fontSize: `${px(this.layout, 14, 11)}px`,
+        fontStyle: isMine ? 'bold' : 'normal',
+        color: occupied ? '#ffffff' : '#7d9c90',
+      })
+      .setOrigin(0.5);
+    // O nome não quebra linha dentro de um círculo pequeno — encurta.
+    fitText(label, seatRadius * 1.7);
+
+    this.root.add([circle, label]);
+
+    if (!occupied) {
+      return;
+    }
+
+    const detail = this.add
+      .text(x, y + seatRadius + space(this.layout, 4, 3), this.seatDetail(seat, shown?.description), {
+        fontSize: `${px(this.layout, 13, 10)}px`,
+        color: this.seatDetailColor(seat),
+      })
+      .setOrigin(0.5, 0);
+    fitText(detail, seatRadius * 3);
+    this.root.add(detail);
+
+    // A aposta da rua fica entre o assento e o centro da mesa, como as fichas
+    // empurradas para a frente numa mesa de verdade.
+    if (seat.bet > 0) {
+      const bet = this.add
+        .text(x, y - seatRadius - space(this.layout, 6, 4), `${seat.bet}`, {
+          fontSize: `${px(this.layout, 13, 10)}px`,
+          fontStyle: 'bold',
+          color: '#0b3d2e',
+          backgroundColor: '#f5d47a',
+          padding: { x: space(this.layout, 6, 4), y: space(this.layout, 2, 2) },
+        })
+        .setOrigin(0.5, 1);
+      this.root.add(bet);
+    }
+  }
+
+  private isTurn(seat: TableSeat): boolean {
+    return seat.user !== null && this.state?.hand?.turnSeat === seat.seatIndex;
+  }
+
+  private seatStrokeColor(seat: TableSeat): number {
+    if (seat.user === null) {
+      return 0x2c5b4c;
+    }
+    if (this.isTurn(seat)) {
+      return 0x6ee7a8;
+    }
+    if (this.state?.status === 'waiting' && seat.ready) {
+      return 0x6ee7a8;
+    }
+    return 0xf5d47a;
+  }
+
+  /** Linha abaixo do assento: fichas e o estado do jogador na mão. */
+  private seatDetail(seat: TableSeat, showdown?: string): string {
+    const parts = [`${seat.chips}`];
+
+    const hand = this.state?.hand;
+    if (showdown) {
+      parts.push(showdown);
+    } else if (hand) {
+      if (seat.folded) {
+        parts.push('desistiu');
+      } else if (seat.allIn) {
+        parts.push('all-in');
+      }
+
+      const positions: string[] = [];
+      if (seat.seatIndex === hand.dealerSeat) {
+        positions.push('D');
+      }
+      if (seat.seatIndex === hand.smallBlindSeat) {
+        positions.push('SB');
+      }
+      if (seat.seatIndex === hand.bigBlindSeat) {
+        positions.push('BB');
+      }
+      if (positions.length > 0) {
+        parts.push(positions.join('/'));
+      }
+    } else if (this.result?.winners.some((winner) => winner.seatIndex === seat.seatIndex)) {
+      parts.push('ganhou');
+    } else {
+      parts.push(seat.ready ? 'pronto' : 'aguardando');
+    }
+
+    return parts.join(' · ');
+  }
+
+  private seatDetailColor(seat: TableSeat): string {
+    if (this.state?.status === 'waiting' && !this.result) {
+      return seat.ready ? '#8ee6b0' : '#a8ccbf';
+    }
+    return seat.folded ? '#7d9c90' : '#cfe8dd';
+  }
+}
+
+/** "bob aumentou para 40" — o que a mesa ouviria numa mesa de verdade. */
+function describeAction(payload: ActionTakenPayload): string {
+  const { username, action, amount, allIn } = payload;
+  if (allIn && action !== 'fold') {
+    return `${username} foi de all-in (${amount})`;
+  }
+  switch (action) {
+    case 'fold':
+      return `${username} desistiu`;
+    case 'check':
+      return `${username} passou`;
+    case 'call':
+      return `${username} pagou ${amount}`;
+    case 'raise':
+      return `${username} aumentou para ${amount}`;
+  }
+}
+
+function describeResult(result: HandResultPayload): string[] {
+  if (result.winners.length === 0) {
+    return ['Mão encerrada'];
+  }
+
+  const lines = result.winners.map((winner) => {
+    const hand = result.showdown.find((entry) => entry.seatIndex === winner.seatIndex);
+    return hand
+      ? `${winner.username} levou ${winner.amount} com ${hand.description.toLowerCase()}`
+      : `${winner.username} levou ${winner.amount}`;
+  });
+
+  if (result.showdown.length === 0) {
+    lines.push('Os outros desistiram');
+  }
+  return lines;
 }

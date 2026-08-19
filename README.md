@@ -137,3 +137,12 @@ informação oculta. Essa regra precisa ser respeitada em todas as fases seguint
 Para o empacotamento futuro em mobile/desktop, o cliente deve continuar sem
 depender de APIs exclusivas de navegador além do canvas e de um overlay DOM
 simples — Capacitor e Electron apenas empacotam o `dist/` gerado pelo Vite.
+
+O jogo não tem resolução de projeto fixa. O Phaser roda em `Scale.RESIZE`, ou
+seja, o canvas tem o tamanho real da área visível, e cada cena se desenha a
+partir das medidas de `client/src/ui/layout.ts` (largura, altura, orientação,
+recortes de notch e um multiplicador de fontes). Toda cena nova deve seguir o
+mesmo padrão — calcular posições a partir dessas medidas e se redesenhar no
+evento `resize` — para continuar legível em pé e deitado. Coordenadas fixas
+voltam a quebrar no celular. As telas com campos de texto (login) ficam no
+overlay DOM, com o layout no CSS do `index.html`.

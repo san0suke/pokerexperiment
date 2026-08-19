@@ -11,6 +11,10 @@ import { getToken, saveSession } from '../services/auth-storage.js';
  * middle of the screen — exactly where the form sits.
  *
  * Phaser only paints the felt background here.
+ *
+ * O layout de retrato e de paisagem está no CSS do `index.html`: em pé a logo
+ * fica sobre o formulário, deitado os dois vão lado a lado, e em telas muito
+ * baixas a logo some para o formulário caber inteiro.
  */
 export class LoginScene extends Phaser.Scene {
   private overlay!: HTMLElement;
@@ -26,9 +30,8 @@ export class LoginScene extends Phaser.Scene {
       return;
     }
 
-    const { width, height } = this.scale;
-    this.add.rectangle(0, 0, width, height, 0x0b3d2e).setOrigin(0);
-
+    // O feltro do fundo vem do `backgroundColor` do jogo; nada é desenhado no
+    // canvas aqui, então não há o que reposicionar quando o aparelho gira.
     this.overlay = document.getElementById('ui-overlay') as HTMLElement;
     this.overlay.innerHTML = this.formHtml();
     this.overlay.classList.add('active');

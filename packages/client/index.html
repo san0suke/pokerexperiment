@@ -26,9 +26,20 @@
         font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
       }
 
+      /*
+       * O canvas ocupa a área visível de verdade. `height: 100%` resolve contra
+       * o viewport de layout, que no celular é mais alto do que a tela por causa
+       * da barra de endereço — parte do jogo ficava desenhada atrás dela.
+       * `--app-height` vem do visualViewport (services/viewport-height.ts).
+       */
       #game {
+        position: fixed;
+        top: 0;
+        left: 0;
         width: 100%;
-        height: 100%;
+        height: 100vh; /* fallback mais antigo */
+        height: 100dvh; /* Safari 15.4+ / Chrome 108+ */
+        height: var(--app-height, 100dvh);
       }
 
       /*
@@ -84,7 +95,8 @@
         align-items: center;
         justify-content: center;
         gap: clamp(16px, 5vh, 40px);
-        padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+        padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+          max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
       }
 
       .brand {
@@ -189,14 +201,49 @@
       }
 
       /*
-       * Below this the title is the difference between the form fitting and the
-       * player having to scroll a login box. The fields are self-explanatory and
-       * scrolling still works for the taller registration form, so drop it.
-       * Touch targets stay at their full size — those are not worth shrinking.
+       * Celular deitado: em coluna a logo empurra o formulário para fora da tela
+       * e o jogador tem que rolar para chegar no botão. Lado a lado a altura
+       * passa a ser a do formulário sozinho, que cabe inteiro, e a largura que
+       * sobra na paisagem — inútil numa coluna centralizada — vira o espaço da
+       * logo. Os alvos de toque continuam do mesmo tamanho.
        */
-      @media (max-height: 400px) {
+      @media (orientation: landscape) and (max-height: 560px) {
+        .screen {
+          flex-direction: row;
+          justify-content: center;
+          align-items: center;
+          gap: clamp(16px, 5vw, 48px);
+        }
+        .brand {
+          flex: 0 1 auto;
+          font-size: clamp(32px, 9vw, 64px);
+        }
+        .card {
+          flex: 0 0 auto;
+          width: min(360px, 55vw);
+        }
+      }
+
+      /*
+       * Em pé, abaixo desta altura (celular pequeno com o teclado aberto) o
+       * título é a diferença entre o formulário caber e o jogador ter que rolar
+       * a tela até o botão. Os campos se explicam sozinhos, então a logo sai.
+       * Deitado isso não vale: lá o título divide a linha com o formulário e não
+       * rouba altura nenhuma — só sai quando nem o formulário sozinho cabe.
+       * Os alvos de toque nunca encolhem.
+       */
+      @media (orientation: portrait) and (max-height: 400px) {
         .brand {
           display: none;
+        }
+      }
+
+      @media (max-height: 320px) {
+        .brand {
+          display: none;
+        }
+        .card {
+          width: min(360px, 100%);
         }
       }
     </style>

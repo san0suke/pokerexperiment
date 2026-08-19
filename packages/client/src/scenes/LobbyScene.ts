@@ -2,95 +2,350 @@ import Phaser from 'phaser';
 import type { LobbyTableSummary } from '@poker/shared';
 import { getSocket, disconnectSocket } from '../services/socket-client.js';
 import { clearSession, getUser } from '../services/auth-storage.js';
+import { createButton } from '../ui/button.js';
+import { readLayout, px, space, type Layout } from '../ui/layout.js';
+import { fitText } from '../ui/text.js';
 
+/** Largura máxima da lista: em telas largas as filas não viram faixas gigantes. */
+const MAX_LIST_WIDTH = 760;
+/** Arrasto maior que isso é rolagem, não toque numa mesa. */
+const DRAG_THRESHOLD = 10;
+
+/**
+ * Lista de mesas. Todo o desenho é refeito a partir das medidas reais da tela
+ * (`readLayout`), então o mesmo código serve para o celular em pé, deitado e para
+ * o desktop — e é refeito de novo a cada giro do aparelho.
+ *
+ * A lista rola por arrasto: no celular deitado cabem duas ou três mesas na altura
+ * visível, e sem rolagem as demais ficariam inalcançáveis.
+ */
 export class LobbyScene extends Phaser.Scene {
-  private tableRows: Phaser.GameObjects.Container[] = [];
+  private layout!: Layout;
+  private tables: LobbyTableSummary[] = [];
+  private connectionError = '';
+
+  private root!: Phaser.GameObjects.Container;
+  private list!: Phaser.GameObjects.Container;
+  private listMask?: Phaser.GameObjects.Graphics;
+  private scrollbar?: Phaser.GameObjects.Graphics;
+
+  private listTop = 0;
+  private listLeft = 0;
+  private listWidth = 0;
+  private listHeight = 0;
+  private scrollTop = 0;
+  private maxScroll = 0;
+
+  private dragging = false;
+  private dragStartY = 0;
+  private dragStartScroll = 0;
+  private dragDistance = 0;
 
   constructor() {
     super('LobbyScene');
   }
 
   create(): void {
-    const { width, height } = this.scale;
-    this.add.rectangle(0, 0, width, height, 0x0b3d2e).setOrigin(0);
-
-    const user = getUser();
-    this.add.text(40, 30, 'LOBBY', { fontSize: '40px', fontStyle: 'bold', color: '#f5d47a' });
-    this.add.text(40, 80, `${user?.username ?? '?'} — ${user?.chips ?? 0} fichas`, {
-      fontSize: '18px',
-      color: '#cfe8dd',
-    });
-
-    this.addLogoutButton(width);
+    this.build();
+    this.bindScrolling();
 
     const socket = getSocket();
 
     socket.on('connect_error', (error) => {
       // A rejected handshake almost always means the token expired.
-      this.add.text(40, 150, `Erro de conexão: ${error.message}`, {
-        fontSize: '16px',
-        color: '#ff8a80',
-      });
+      this.connectionError = `Erro de conexão: ${error.message}`;
+      this.build();
     });
 
-    socket.on('lobby:tables-updated', (tables) => this.renderTables(tables));
-    socket.emit('lobby:list-tables', (tables) => this.renderTables(tables));
+    socket.on('lobby:tables-updated', (tables) => this.setTables(tables));
+    socket.emit('lobby:list-tables', (tables) => this.setTables(tables));
+
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       socket.off('lobby:tables-updated');
       socket.off('connect_error');
+      this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     });
   }
 
-  private addLogoutButton(width: number): void {
-    this.add
-      .text(width - 40, 40, 'Sair', { fontSize: '18px', color: '#cfe8dd' })
-      .setOrigin(1, 0)
-      .setInteractive({ useHandCursor: true })
-      .on('pointerup', () => {
+  private handleResize(): void {
+    this.build();
+  }
+
+  private setTables(tables: LobbyTableSummary[]): void {
+    this.tables = tables;
+    this.build();
+  }
+
+  /** Redesenha a tela inteira com as medidas atuais. */
+  private build(): void {
+    this.layout = readLayout(this.scale);
+
+    this.root?.destroy(true);
+    this.list?.destroy(true);
+    this.listMask?.destroy();
+    this.scrollbar?.destroy();
+    this.listMask = undefined;
+    this.scrollbar = undefined;
+
+    this.root = this.add.container(0, 0);
+
+    const headerBottom = this.buildHeader();
+    this.buildList(headerBottom + space(this.layout, 20, 14));
+  }
+
+  /** Desenha o cabeçalho e devolve a altura ocupada por ele. */
+  private buildHeader(): number {
+    const { width, padX, padTop, ui, portrait } = this.layout;
+    const user = getUser();
+
+    const title = this.add
+      .text(padX, padTop, 'LOBBY', {
+        fontSize: `${px(this.layout, 40, 26)}px`,
+        fontStyle: 'bold',
+        color: '#f5d47a',
+      })
+      .setOrigin(0, 0);
+
+    const logout = createButton(this, {
+      label: 'Sair',
+      x: width - padX,
+      y: padTop,
+      ui,
+      fontSize: 16,
+      anchorX: 1,
+      onClick: () => {
         disconnectSocket();
         clearSession();
         this.scene.start('LoginScene');
-      });
+      },
+    });
+
+    const chips = user?.chips ?? 0;
+    const subtitle = this.add
+      .text(
+        padX,
+        title.y + title.height + space(this.layout, 8, 6),
+        `${user?.username ?? '?'} — ${chips} fichas`,
+        { fontSize: `${px(this.layout, 18, 13)}px`, color: '#cfe8dd' },
+      )
+      .setOrigin(0, 0);
+
+    // Em pé o botão desce até a altura da segunda linha do cabeçalho, então o
+    // texto do usuário só pode ocupar a largura que sobra ao lado dele.
+    fitText(subtitle, width - padX * 2 - (portrait ? logout.width + space(this.layout, 12, 8) : 0));
+
+    this.root.add([title, subtitle, logout]);
+
+    let bottom = Math.max(subtitle.y + subtitle.height, padTop + logout.height);
+
+    if (this.connectionError) {
+      const error = this.add
+        .text(padX, bottom + space(this.layout, 10, 8), this.connectionError, {
+          fontSize: `${px(this.layout, 16, 12)}px`,
+          color: '#ff8a80',
+          wordWrap: { width: width - padX * 2 },
+        })
+        .setOrigin(0, 0);
+      this.root.add(error);
+      bottom = error.y + error.height;
+    }
+
+    return bottom;
   }
 
-  private renderTables(tables: LobbyTableSummary[]): void {
-    this.tableRows.forEach((row) => row.destroy());
-    this.tableRows = [];
+  private buildList(top: number): void {
+    const { width, height, padX, padBottom } = this.layout;
 
-    tables.forEach((table, index) => {
-      const y = 160 + index * 90;
-      const isFull = table.seatedCount >= table.maxSeats;
+    this.listWidth = Math.min(width - padX * 2, MAX_LIST_WIDTH);
+    this.listLeft = Math.round((width - this.listWidth) / 2);
+    this.listTop = top;
+    this.listHeight = Math.max(0, height - padBottom - top);
 
-      const background = this.add
-        .rectangle(0, 0, 640, 74, 0x134f3c)
-        .setOrigin(0)
-        .setStrokeStyle(2, 0x1e6b52);
+    this.list = this.add.container(this.listLeft, this.listTop);
 
-      const title = this.add.text(16, 12, table.name, { fontSize: '22px', color: '#ffffff' });
-      const details = this.add.text(
-        16,
-        42,
-        `Blinds ${table.smallBlind}/${table.bigBlind} — ${table.seatedCount}/${table.maxSeats} jogadores`,
-        { fontSize: '15px', color: '#a8ccbf' },
-      );
-
-      const action = this.add
-        .text(600, 26, isFull ? 'Lotada' : 'Entrar', {
-          fontSize: '20px',
-          color: isFull ? '#7d9c90' : '#f5d47a',
-          fontStyle: 'bold',
+    if (this.tables.length === 0) {
+      const empty = this.add
+        .text(this.listWidth / 2, space(this.layout, 24, 16), 'Nenhuma mesa disponível', {
+          fontSize: `${px(this.layout, 18, 14)}px`,
+          color: '#a8ccbf',
+          align: 'center',
+          wordWrap: { width: this.listWidth },
         })
-        .setOrigin(1, 0);
+        .setOrigin(0.5, 0);
+      this.list.add(empty);
+      this.maxScroll = 0;
+      this.scrollTop = 0;
+      return;
+    }
 
-      if (!isFull) {
-        action.setInteractive({ useHandCursor: true }).on('pointerup', () => {
-          this.scene.start('TableScene', { tableId: table.id });
-        });
-      }
+    const rowHeight = Math.max(72, Math.round(84 * this.layout.ui));
+    const gap = space(this.layout, 12, 8);
 
-      const row = this.add.container(40, y, [background, title, details, action]);
-      this.tableRows.push(row);
+    this.tables.forEach((table, index) => {
+      this.list.add(this.buildRow(table, index * (rowHeight + gap), rowHeight));
     });
+
+    const contentHeight = this.tables.length * (rowHeight + gap) - gap;
+    this.maxScroll = Math.max(0, contentHeight - this.listHeight);
+    this.applyScroll(this.scrollTop);
+
+    // O recorte impede que as filas invadam o cabeçalho enquanto a lista rola.
+    const shape = this.make.graphics({}, false);
+    shape.fillRect(this.listLeft, this.listTop, this.listWidth, this.listHeight);
+    this.list.setMask(shape.createGeometryMask());
+    this.listMask = shape;
+
+    this.drawScrollbar();
+  }
+
+  private buildRow(
+    table: LobbyTableSummary,
+    y: number,
+    rowHeight: number,
+  ): Phaser.GameObjects.Container {
+    const { ui, portrait } = this.layout;
+    const isFull = table.seatedCount >= table.maxSeats;
+    const innerPad = space(this.layout, 16, 12);
+
+    const background = this.add.graphics();
+    background.fillStyle(0x134f3c, 1);
+    background.fillRoundedRect(0, 0, this.listWidth, rowHeight, 12);
+    background.lineStyle(2, isFull ? 0x1a5a46 : 0x1e6b52, 1);
+    background.strokeRoundedRect(0, 0, this.listWidth, rowHeight, 12);
+
+    const join = createButton(this, {
+      label: isFull ? 'Lotada' : 'Entrar',
+      x: this.listWidth - innerPad,
+      y: rowHeight / 2,
+      ui,
+      fontSize: 17,
+      anchorX: 1,
+      anchorY: 0.5,
+      variant: isFull ? 'disabled' : 'primary',
+      onClick: () => this.joinTable(table.id),
+    });
+
+    const textWidth = this.listWidth - innerPad * 2 - join.width - space(this.layout, 12, 8);
+
+    const name = this.add
+      .text(innerPad, rowHeight / 2 - space(this.layout, 4, 3), table.name, {
+        fontSize: `${px(this.layout, 22, 16)}px`,
+        color: '#ffffff',
+      })
+      .setOrigin(0, 1);
+    fitText(name, textWidth);
+
+    // Deitado cabe a linha inteira; em pé, só o essencial.
+    const details = portrait
+      ? `${table.smallBlind}/${table.bigBlind} · ${table.seatedCount}/${table.maxSeats} jogadores`
+      : `Blinds ${table.smallBlind}/${table.bigBlind} — ${table.seatedCount}/${table.maxSeats} jogadores`;
+
+    const info = this.add
+      .text(innerPad, rowHeight / 2 + space(this.layout, 4, 3), details, {
+        fontSize: `${px(this.layout, 15, 12)}px`,
+        color: '#a8ccbf',
+      })
+      .setOrigin(0, 0);
+    fitText(info, textWidth);
+
+    const row = this.add.container(0, y, [background, name, info, join]);
+    row.setSize(this.listWidth, rowHeight);
+
+    if (!isFull) {
+      // A fila inteira é alvo de toque — no celular, mirar só no botão exige uma
+      // precisão desnecessária.
+      row.setInteractive({
+        // Deslocado do `displayOrigin` do container — ver `ui/button.ts`.
+        hitArea: new Phaser.Geom.Rectangle(
+          this.listWidth / 2,
+          rowHeight / 2,
+          this.listWidth,
+          rowHeight,
+        ),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        useHandCursor: true,
+      });
+      row.on('pointerup', () => this.joinTable(table.id));
+    }
+
+    return row;
+  }
+
+  private joinTable(tableId: string): void {
+    // Soltou o dedo depois de arrastar: era rolagem, não escolha de mesa. Só vale
+    // quando a lista realmente rola — com todas as mesas visíveis não há rolagem
+    // possível, e aí o tremido normal do dedo cancelaria o toque à toa.
+    if (this.maxScroll > 0 && this.dragDistance > DRAG_THRESHOLD) {
+      return;
+    }
+    this.scene.start('TableScene', { tableId });
+  }
+
+  private bindScrolling(): void {
+    this.input.on(Phaser.Input.Events.POINTER_DOWN, (pointer: Phaser.Input.Pointer) => {
+      this.dragging = true;
+      this.dragStartY = pointer.y;
+      this.dragStartScroll = this.scrollTop;
+      this.dragDistance = 0;
+    });
+
+    this.input.on(Phaser.Input.Events.POINTER_MOVE, (pointer: Phaser.Input.Pointer) => {
+      if (!this.dragging || !pointer.isDown) {
+        return;
+      }
+      const delta = pointer.y - this.dragStartY;
+      this.dragDistance = Math.max(this.dragDistance, Math.abs(delta));
+      this.applyScroll(this.dragStartScroll - delta);
+    });
+
+    const endDrag = (): void => {
+      this.dragging = false;
+    };
+    this.input.on(Phaser.Input.Events.POINTER_UP, endDrag);
+    this.input.on(Phaser.Input.Events.POINTER_UP_OUTSIDE, endDrag);
+
+    this.input.on(
+      Phaser.Input.Events.POINTER_WHEEL,
+      (_pointer: Phaser.Input.Pointer, _over: unknown, _deltaX: number, deltaY: number) => {
+        this.dragDistance = 0;
+        this.applyScroll(this.scrollTop + deltaY * 0.5);
+      },
+    );
+  }
+
+  private applyScroll(value: number): void {
+    this.scrollTop = Phaser.Math.Clamp(value, 0, this.maxScroll);
+    this.list.y = this.listTop - this.scrollTop;
+    this.drawScrollbar();
+  }
+
+  /** Barra fina de rolagem: mostra que há mais mesas do que cabe na tela. */
+  private drawScrollbar(): void {
+    this.scrollbar?.destroy();
+    this.scrollbar = undefined;
+
+    if (this.maxScroll <= 0) {
+      return;
+    }
+
+    const trackHeight = this.listHeight;
+    const thumbHeight = Math.max(
+      32,
+      Math.round((trackHeight * trackHeight) / (trackHeight + this.maxScroll)),
+    );
+    const travel = trackHeight - thumbHeight;
+    const thumbY = this.listTop + (this.scrollTop / this.maxScroll) * travel;
+    // Na margem, se ela couber; senão encostada na borda de dentro das filas.
+    const gutter = this.layout.padX >= 12;
+    const x = this.listLeft + this.listWidth + (gutter ? 4 : -6);
+
+    const bar = this.add.graphics();
+    bar.fillStyle(0xffffff, 0.12);
+    bar.fillRoundedRect(x, this.listTop, 4, trackHeight, 2);
+    bar.fillStyle(0xf5d47a, 0.7);
+    bar.fillRoundedRect(x, thumbY, 4, thumbHeight, 2);
+    this.scrollbar = bar;
   }
 }

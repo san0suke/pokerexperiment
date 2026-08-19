@@ -8,11 +8,16 @@ export const gameConfig: Phaser.Types.Core.GameConfig = {
   parent: 'game',
   backgroundColor: '#0b3d2e',
   scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
-    // Fixed design resolution; FIT letterboxes it onto phones and desktops alike.
-    width: 1280,
-    height: 720,
+    /*
+     * RESIZE, e não FIT: com uma resolução de projeto fixa (1280x720) o celular
+     * em pé recebia uma faixa letterboxed no meio da tela — texto minúsculo e
+     * duas tarjas verdes ocupando a maior parte do aparelho. Aqui o canvas tem o
+     * tamanho real da área visível e cada cena se redesenha a partir dele
+     * (`ui/layout.ts`), então retrato e paisagem recebem layouts próprios.
+     */
+    mode: Phaser.Scale.RESIZE,
+    width: '100%',
+    height: '100%',
   },
   scene: [LoginScene, LobbyScene, TableScene],
 };
