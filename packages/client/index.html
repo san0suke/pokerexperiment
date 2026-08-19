@@ -225,17 +225,44 @@
       }
 
       /*
-       * Em pé, abaixo desta altura (celular pequeno com o teclado aberto) o
-       * título é a diferença entre o formulário caber e o jogador ter que rolar
-       * a tela até o botão. Os campos se explicam sozinhos, então a logo sai.
-       * Deitado isso não vale: lá o título divide a linha com o formulário e não
-       * rouba altura nenhuma — só sai quando nem o formulário sozinho cabe.
-       * Os alvos de toque nunca encolhem.
+       * Celular em pé com o teclado aberto: o título é a diferença entre o
+       * formulário caber e o jogador ter que rolar a tela até o botão. Os campos
+       * se explicam sozinhos, então a logo sai. Só ela: o formulário mantém o
+       * tamanho, senão os campos encolhem debaixo do dedo do jogador no momento
+       * em que ele vai digitar. Se ainda assim não couber, o overlay rola.
+       *
+       * `short-viewport` vem do JS (`services/viewport-height.ts`), e não de um
+       * `@media (max-height: ...)`, porque a media query resolve contra o
+       * viewport de layout: no iOS ele não encolhe quando o teclado abre, então
+       * a regra nunca valia justamente no caso que ela existia para resolver.
+       *
+       * Deitado isso não se aplica: lá o título divide a linha com o formulário
+       * e não rouba altura nenhuma — só sai quando nem o formulário sozinho
+       * cabe. Os alvos de toque nunca encolhem.
        */
-      @media (orientation: portrait) and (max-height: 400px) {
-        .brand {
+      @media (orientation: portrait) {
+        .short-viewport .brand {
           display: none;
         }
+      }
+
+      /*
+       * Com um campo em foco a logo sai em qualquer orientação. Deitado ela não
+       * rouba altura, mas rouba largura: fica ao lado e espreme o formulário
+       * justamente enquanto o teclado cobre o resto da tela. `keyboard-open` vem
+       * do foco (`scenes/LoginScene.ts`) — é a causa do teclado subir, e o único
+       * sinal que serve nos dois sistemas.
+       */
+      .short-viewport.keyboard-open .brand {
+        display: none;
+      }
+      /*
+       * E o formulário recupera a largura inteira: os 55vw deitados existem só
+       * para dar espaço à logo ao lado. Sem ela na linha, encolher o formulário
+       * não sobra para ninguém — só espreme os campos na hora de digitar.
+       */
+      .short-viewport.keyboard-open .card {
+        width: min(360px, 100%);
       }
 
       @media (max-height: 320px) {

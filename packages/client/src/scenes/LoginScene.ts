@@ -36,11 +36,38 @@ export class LoginScene extends Phaser.Scene {
     this.overlay.innerHTML = this.formHtml();
     this.overlay.classList.add('active');
     this.bindForm();
+    this.trackFieldFocus();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.overlay.classList.remove('active');
       this.overlay.innerHTML = '';
+      document.documentElement.classList.remove('keyboard-open');
     });
+  }
+
+  /**
+   * Marca `<html>` enquanto um campo está em foco — o mais perto de "o teclado
+   * está aberto" que dá para saber sem adivinhar.
+   *
+   * Não existe evento de teclado no navegador. No iOS ele nem mexe no viewport
+   * de layout, então nenhuma media query o enxerga; no Android o encolhimento
+   * chega tarde. O foco, por outro lado, é a causa: o teclado sobe porque o
+   * jogador tocou num campo. Combinado com `short-viewport`
+   * (`services/viewport-height.ts`), é o que tira a logo do caminho do
+   * formulário — inclusive com o aparelho deitado, onde ela fica ao lado e
+   * espreme o formulário na largura.
+   */
+  private trackFieldFocus(): void {
+    const update = (): void => {
+      const active = document.activeElement;
+      const editing = active instanceof HTMLInputElement && this.overlay.contains(active);
+      document.documentElement.classList.toggle('keyboard-open', editing);
+    };
+
+    this.overlay.addEventListener('focusin', update);
+    // O `focusout` chega antes do foco novo assentar: pular do usuário para a
+    // senha passaria por um instante sem campo ativo e a logo piscaria de volta.
+    this.overlay.addEventListener('focusout', () => setTimeout(update, 0));
   }
 
   private formHtml(): string {
