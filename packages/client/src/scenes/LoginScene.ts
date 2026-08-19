@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { login, register } from '../services/api-client.js';
 import { getToken, saveSession } from '../services/auth-storage.js';
+import { getRememberedTable } from '../services/table-session.js';
 
 /**
  * Login/registration screen. Rendered entirely in the DOM overlay rather than in
@@ -24,9 +25,15 @@ export class LoginScene extends Phaser.Scene {
   }
 
   create(): void {
-    // Already signed in from a previous visit — go straight to the lobby.
+    // Already signed in from a previous visit — go straight to the lobby, ou de
+    // volta para a mesa em que o jogador estava quando a página foi recarregada.
     if (getToken()) {
-      this.scene.start('LobbyScene');
+      const tableId = getRememberedTable();
+      if (tableId) {
+        this.scene.start('TableScene', { tableId });
+      } else {
+        this.scene.start('LobbyScene');
+      }
       return;
     }
 

@@ -1,9 +1,11 @@
 import Phaser from 'phaser';
 import type { ActionTakenPayload, Card, HandResultPayload, TableSeat, TableState } from '@poker/shared';
-import { getSocket } from '../services/socket-client.js';
+import { getSocket, type PokerClientSocket } from '../services/socket-client.js';
 import { getUser } from '../services/auth-storage.js';
+import { forgetTable, rememberTable } from '../services/table-session.js';
 import { createButton, type ButtonVariant } from '../ui/button.js';
 import { CARD_ASPECT, createCardFace } from '../ui/card.js';
+import { createModalMessage } from '../ui/dialog.js';
 import { readLayout, dp, px, space, type Layout } from '../ui/layout.js';
 import { fitText } from '../ui/text.js';
 
@@ -27,6 +29,12 @@ const WIDE_CONTROLS_MIN_WIDTH = 560;
 const SEAT_CARD_WIDTH_RATIO = 0.66;
 /** Quanto a base das cartas entra no círculo do assento, em fração do raio. */
 const SEAT_CARD_OVERLAP_RATIO = 0.3;
+/**
+ * Depois de tanto tempo fora do ar, o aviso de reconexão ganha uma saída para o
+ * lobby. Sem ela, uma queda que não se resolve — token vencido, servidor fora —
+ * deixa o jogador preso olhando para o aviso, porque ele cobre a tela inteira.
+ */
+const STUCK_OFFLINE_MS = 15_000;
 
 /**
  * Mesa de poker: assentos em volta do feltro, cartas comunitárias, pote e os
@@ -59,6 +67,11 @@ export class TableScene extends Phaser.Scene {
   private errorMessage = '';
   /** O jogador abriu as opções de aumento. */
   private raising = false;
+  /** O socket caiu: a mesa na tela está congelada até ele voltar. */
+  private offline = false;
+  /** A queda já dura o bastante para oferecer a volta ao lobby. */
+  private offlineForTooLong = false;
+  private offlineTimer?: Phaser.Time.TimerEvent;
   private root!: Phaser.GameObjects.Container;
 
   constructor() {
@@ -73,9 +86,13 @@ export class TableScene extends Phaser.Scene {
     this.lastAction = '';
     this.errorMessage = '';
     this.raising = false;
+    this.offline = false;
+    this.offlineForTooLong = false;
   }
 
   create(): void {
+    // Uma recarga da página volta para cá em vez de cair no lobby.
+    rememberTable(this.tableId);
     this.build();
 
     const socket = getSocket();
@@ -128,13 +145,29 @@ export class TableScene extends Phaser.Scene {
       this.build();
     });
 
-    socket.emit('table:join', { tableId: this.tableId }, (state) => {
-      if (state) {
-        this.state = state;
-        this.build();
-      }
+    /*
+     * Queda e volta. O socket.io reconecta sozinho, mas o socket que volta é
+     * outro: ele não está mais na sala da mesa e o servidor não tem como saber
+     * que aquele jogador é o mesmo até ele pedir o assento de novo. Enquanto
+     * isso o jogador vê a mesa congelada, então o aviso é obrigatório.
+     */
+    socket.on('disconnect', () => this.markOffline());
+    // Servidor fora do ar ou token vencido: a conexão nem chega a existir, então
+    // o `disconnect` nunca vem — e sem isto a mesa ficaria vazia e muda.
+    socket.on('connect_error', () => this.markOffline());
+
+    socket.on('connect', () => {
+      this.offline = false;
+      this.offlineForTooLong = false;
+      this.offlineTimer?.remove();
+      this.offlineTimer = undefined;
+      this.requestSeat(socket);
+      this.build();
     });
 
+    this.requestSeat(socket);
+
+    document.addEventListener('visibilitychange', this.handleVisibility);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -143,12 +176,67 @@ export class TableScene extends Phaser.Scene {
       socket.off('hand:action-taken');
       socket.off('hand:ended');
       socket.off('server:error');
+      socket.off('disconnect');
+      socket.off('connect');
+      socket.off('connect_error');
+      this.offlineTimer?.remove();
+      document.removeEventListener('visibilitychange', this.handleVisibility);
       this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     });
   }
 
+  /** A mesa na tela congelou: o aviso sobe e o relógio da saída começa a contar. */
+  private markOffline(): void {
+    if (this.offline) {
+      return;
+    }
+    this.offline = true;
+    this.offlineTimer?.remove();
+    this.offlineTimer = this.time.delayedCall(STUCK_OFFLINE_MS, () => {
+      this.offlineForTooLong = true;
+      this.build();
+    });
+    this.build();
+  }
+
+  /**
+   * Pede o assento — na entrada e a cada reconexão. O servidor devolve o mesmo
+   * assento enquanto o prazo de reconexão dele não estourou, junto com as cartas
+   * da mão em andamento, que vão só para este socket.
+   */
+  private requestSeat(socket: PokerClientSocket): void {
+    socket.emit('table:join', { tableId: this.tableId }, (state) => {
+      if (state) {
+        this.state = state;
+        this.build();
+      }
+    });
+  }
+
+  /**
+   * Voltar para o app é o momento em que a queda aparece: em segundo plano o
+   * celular congela os temporizadores, então a tentativa de reconexão do
+   * socket.io pode estar parada há minutos. Aqui ela recomeça na hora.
+   */
+  private handleVisibility = (): void => {
+    if (document.visibilityState !== 'visible') {
+      return;
+    }
+    const socket = getSocket();
+    if (!socket.connected) {
+      socket.connect();
+    }
+  };
+
   private handleResize(): void {
     this.build();
+  }
+
+  /** Sair pela porta da frente: o assento é liberado na hora, sem prazo nenhum. */
+  private backToLobby(): void {
+    getSocket().emit('table:leave', { tableId: this.tableId });
+    forgetTable();
+    this.scene.start('LobbyScene');
   }
 
   /** Assento do jogador logado, ou null se ele não está sentado nesta mesa. */
@@ -206,6 +294,21 @@ export class TableScene extends Phaser.Scene {
     const headerBottom = this.buildHeader();
     const footerTop = this.buildFooter();
     this.buildTable(headerBottom + space(this.layout, 12, 8), footerTop - space(this.layout, 12, 8));
+
+    // Por último: o aviso cobre a mesa inteira e engole os toques dos botões.
+    if (this.offline) {
+      this.root.add(
+        createModalMessage(this, this.layout, {
+          title: 'Reconectando...',
+          detail: this.offlineForTooLong
+            ? 'A conexão não voltou. Seu assento fica guardado por pouco tempo — depois disso a mesa o libera.'
+            : 'Seu assento e suas fichas estão guardados. É só um instante.',
+          action: this.offlineForTooLong
+            ? { label: 'Voltar ao lobby', onClick: () => this.backToLobby() }
+            : undefined,
+        }),
+      );
+    }
   }
 
   /** Desenha o cabeçalho e devolve a altura ocupada por ele. */
@@ -219,10 +322,7 @@ export class TableScene extends Phaser.Scene {
       layout: this.layout,
       fontSize: 16,
       anchorX: 1,
-      onClick: () => {
-        getSocket().emit('table:leave', { tableId: this.tableId });
-        this.scene.start('LobbyScene');
-      },
+      onClick: () => this.backToLobby(),
     });
 
     const label = this.state?.name ?? 'Carregando mesa...';
@@ -760,6 +860,12 @@ export class TableScene extends Phaser.Scene {
   /** Linha abaixo do assento: fichas e o estado do jogador na mão. */
   private seatDetail(seat: TableSeat, showdown?: string): string {
     const parts = [`${seat.chips}`];
+
+    // Quem caiu continua com o assento por alguns segundos: os outros precisam
+    // saber por que a mesa está esperando.
+    if (seat.disconnected) {
+      parts.push('caiu');
+    }
 
     const hand = this.state?.hand;
     if (showdown) {

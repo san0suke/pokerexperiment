@@ -3,6 +3,8 @@ import {
   canStartHand,
   getPrivateHandState,
   getTableState,
+  markUserConnected,
+  markUserDisconnected,
   seatUser,
   setReady,
   startTableHand,
@@ -14,6 +16,32 @@ import {
 import { broadcastLobby, type PokerServer, type PokerSocket } from './lobby.handlers.js';
 
 const roomFor = (tableId: string) => `table:${tableId}`;
+
+/**
+ * Quanto tempo o assento espera por quem caiu.
+ *
+ * Cair no celular é rotina: a tela apaga, o app vai para segundo plano, o wi-fi
+ * troca de ponto. Liberar o assento na hora significava perder as fichas e a mão
+ * por causa de um túnel. O preço é o outro lado: enquanto o prazo corre, a mesa
+ * espera pela vez de quem sumiu, porque ainda não existe relógio de ação. Daí o
+ * prazo ser curto.
+ */
+const RECONNECT_GRACE_MS = 45_000;
+
+/**
+ * Remoções agendadas por jogador. Fora do registry de propósito: liberar o
+ * assento é a única parte que precisa avisar a sala, e quem sabe falar com a
+ * sala é esta camada.
+ */
+const pendingRemovals = new Map<string, NodeJS.Timeout>();
+
+function cancelPendingRemoval(userId: string): void {
+  const timer = pendingRemovals.get(userId);
+  if (timer) {
+    clearTimeout(timer);
+    pendingRemovals.delete(userId);
+  }
+}
 
 function emitTableState(io: PokerServer, tableId: string): void {
   const state = getTableState(tableId);
@@ -65,8 +93,38 @@ function announceUnseat(io: PokerServer, result: UnseatResult): void {
   emitTableState(io, result.tableId);
 }
 
+/** Passado o prazo, quem caiu sai como se tivesse clicado em sair. */
+function scheduleRemoval(io: PokerServer, user: PokerSocket['data']['user']): void {
+  cancelPendingRemoval(user.id);
+
+  const timer = setTimeout(() => {
+    pendingRemovals.delete(user.id);
+
+    const affected = unseatUserEverywhere(user.id);
+    for (const result of affected) {
+      io.to(roomFor(result.tableId)).emit('table:player-left', user);
+      announceUnseat(io, result);
+    }
+    if (affected.length > 0) {
+      broadcastLobby(io);
+    }
+  }, RECONNECT_GRACE_MS);
+
+  // Um assento esperando não é motivo para o processo não terminar.
+  timer.unref?.();
+  pendingRemovals.set(user.id, timer);
+}
+
 export function registerTableHandlers(io: PokerServer, socket: PokerSocket): void {
   const user = socket.data.user;
+
+  // Conexão nova do mesmo jogador é a volta dele: cancela a remoção agendada e
+  // reacende os assentos. Fica aqui, e não no `table:join`, porque o assento
+  // precisa voltar ao normal mesmo que ele volte direto para o lobby.
+  cancelPendingRemoval(user.id);
+  for (const tableId of markUserConnected(user.id)) {
+    emitTableState(io, tableId);
+  }
 
   socket.on('table:join', async ({ tableId }, ack) => {
     const state = seatUser(tableId, user);
@@ -130,13 +188,16 @@ export function registerTableHandlers(io: PokerServer, socket: PokerSocket): voi
   });
 
   socket.on('disconnect', () => {
-    const affected = unseatUserEverywhere(user.id);
-    for (const result of affected) {
-      io.to(roomFor(result.tableId)).emit('table:player-left', user);
-      announceUnseat(io, result);
+    // O assento não é liberado aqui: fica guardado, marcado como caído, até o
+    // prazo de reconexão acabar.
+    const affected = markUserDisconnected(user.id);
+    if (affected.length === 0) {
+      return;
     }
-    if (affected.length > 0) {
-      broadcastLobby(io);
+
+    for (const tableId of affected) {
+      emitTableState(io, tableId);
     }
+    scheduleRemoval(io, user);
   });
 }

@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import type { LobbyTableSummary } from '@poker/shared';
-import { getSocket, disconnectSocket } from '../services/socket-client.js';
+import { getSocket, disconnectSocket, type PokerClientSocket } from '../services/socket-client.js';
 import { clearSession, getUser } from '../services/auth-storage.js';
+import { forgetTable } from '../services/table-session.js';
 import { createButton } from '../ui/button.js';
 import { readLayout, dp, px, space, type Layout } from '../ui/layout.js';
 import { fitText } from '../ui/text.js';
@@ -61,19 +62,32 @@ export class LobbyScene extends Phaser.Scene {
     });
 
     socket.on('lobby:tables-updated', (tables) => this.setTables(tables));
-    socket.emit('lobby:list-tables', (tables) => this.setTables(tables));
+
+    // A lista só chega por broadcast quando algo muda: depois de uma queda ela
+    // ficaria parada no que era antes até alguém sentar ou sair de alguma mesa.
+    socket.on('connect', () => {
+      this.connectionError = '';
+      this.requestTables(socket);
+    });
+
+    this.requestTables(socket);
 
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       socket.off('lobby:tables-updated');
       socket.off('connect_error');
+      socket.off('connect');
       this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     });
   }
 
   private handleResize(): void {
     this.build();
+  }
+
+  private requestTables(socket: PokerClientSocket): void {
+    socket.emit('lobby:list-tables', (tables) => this.setTables(tables));
   }
 
   private setTables(tables: LobbyTableSummary[]): void {
@@ -121,6 +135,7 @@ export class LobbyScene extends Phaser.Scene {
       onClick: () => {
         disconnectSocket();
         clearSession();
+        forgetTable();
         this.scene.start('LoginScene');
       },
     });

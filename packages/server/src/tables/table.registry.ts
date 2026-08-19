@@ -30,6 +30,8 @@ interface Seat {
   inHand: boolean;
   folded: boolean;
   allIn: boolean;
+  /** Socket caiu: o assento fica guardado até o prazo de reconexão acabar. */
+  disconnected: boolean;
 }
 
 interface Table {
@@ -151,6 +153,7 @@ export function getTableState(tableId: string): TableState | null {
         inHand: seat?.inHand ?? false,
         folded: seat?.folded ?? false,
         allIn: seat?.allIn ?? false,
+        disconnected: seat?.disconnected ?? false,
       };
     }),
     hand: table.hand ? toPublicHand(table.hand) : null,
@@ -173,7 +176,8 @@ export function seatUser(tableId: string, user: AuthenticatedUser): TableState |
     return null;
   }
 
-  if (findSeatIndex(table, user.id) === null) {
+  const seatIndex = findSeatIndex(table, user.id);
+  if (seatIndex === null) {
     const freeSeat = Array.from({ length: table.maxSeats }, (_, i) => i).find(
       (i) => !table.seats.has(i),
     );
@@ -190,10 +194,54 @@ export function seatUser(tableId: string, user: AuthenticatedUser): TableState |
       inHand: false,
       folded: false,
       allIn: false,
+      disconnected: false,
     });
+  } else {
+    // Sentar de novo é a própria prova de que ele voltou.
+    table.seats.get(seatIndex)!.disconnected = false;
   }
 
   return getTableState(tableId);
+}
+
+/**
+ * O socket caiu: os assentos dele ficam guardados, marcados para os outros verem.
+ *
+ * Quem some não pode continuar "pronto" — com o pronto de pé, a mão seguinte
+ * começaria sem ele na frente da tela e travaria na primeira vez que a vez
+ * chegasse no assento vazio, porque ainda não existe relógio de ação. Quem
+ * libera o assento de vez é a camada de socket, passado o prazo de reconexão.
+ */
+export function markUserDisconnected(userId: string): string[] {
+  const affected: string[] = [];
+  for (const table of tables.values()) {
+    const seatIndex = findSeatIndex(table, userId);
+    if (seatIndex === null) {
+      continue;
+    }
+    const seat = table.seats.get(seatIndex)!;
+    seat.disconnected = true;
+    seat.ready = false;
+    affected.push(table.id);
+  }
+  return affected;
+}
+
+/** O jogador voltou: devolve as mesas em que algum assento dele estava marcado. */
+export function markUserConnected(userId: string): string[] {
+  const affected: string[] = [];
+  for (const table of tables.values()) {
+    const seatIndex = findSeatIndex(table, userId);
+    if (seatIndex === null) {
+      continue;
+    }
+    const seat = table.seats.get(seatIndex)!;
+    if (seat.disconnected) {
+      seat.disconnected = false;
+      affected.push(table.id);
+    }
+  }
+  return affected;
 }
 
 /** Monta o resultado da mão e devolve a mesa para o estado de espera. */

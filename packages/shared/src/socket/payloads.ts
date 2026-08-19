@@ -38,6 +38,11 @@ export interface TableSeat {
   folded: boolean;
   /** Apostou todas as fichas: continua na mão, mas não age mais. */
   allIn: boolean;
+  /**
+   * O socket do jogador caiu e o assento está guardado esperando a volta dele.
+   * Passado o prazo, o servidor libera o assento como se ele tivesse saído.
+   */
+  disconnected: boolean;
 }
 
 /**

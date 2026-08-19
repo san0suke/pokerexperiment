@@ -87,8 +87,22 @@ já está escrito prevendo que hand/pot state entrem nele.
 
 Fluxo de assentos: `table.handlers.ts` trata join/leave/disconnect, sempre emitindo
 `table:state` para a sala `table:<id>` **e** `broadcastLobby(io)` para atualizar a
-contagem no lobby. Desconexão usa `unseatUserEverywhere` porque o socket não sabe em
-que mesa estava.
+contagem no lobby.
+
+**Cair não é sair.** No `disconnect` o assento não é liberado: `markUserDisconnected`
+o marca (`TableSeat.disconnected`, público) e derruba o `ready` — com o pronto de pé
+a mão seguinte começaria sem o jogador na frente da tela e travaria, porque ainda não
+existe relógio de ação. Uma conexão nova do mesmo usuário desfaz tudo isso já no
+`registerTableHandlers`, antes de qualquer `table:join`. Quem libera o assento de vez
+é o `RECONNECT_GRACE_MS` (45s) em `table.handlers.ts`, que aí sim chama
+`unseatUserEverywhere` — o socket não sabe em que mesa o jogador estava. O prazo é
+curto de propósito: enquanto ele corre, a mesa espera pela vez de quem sumiu.
+
+Do lado do cliente, a `TableScene` cobre a mesa com o aviso "Reconectando..."
+(`ui/dialog.ts`) enquanto o socket está fora, e refaz o `table:join` a cada `connect`
+— o socket que volta é outro e não está mais na sala. `services/table-session.ts`
+guarda a mesa em `sessionStorage` para que uma recarga da página (o celular descarta
+a aba em segundo plano) volte para ela em vez de cair no lobby.
 
 ### Autenticação
 
@@ -186,6 +200,9 @@ regras que costumam sair erradas:
 público (`syncSeatsFromHand`) e devolve as cartas privadas por usuário. O
 `hand-engine.test.ts` cobre esses casos (21 testes), sempre conferindo que a soma das
 fichas na mesa não muda.
+
+Pronto também: queda e volta do jogador — assento guardado por 45s, aviso de
+reconexão no cliente e retorno à mesa depois de uma recarga da página.
 
 Ainda não existe: relógio de ação (uma mesa espera para sempre por quem não joga),
 histórico de mãos e persistência — reiniciar o servidor zera tudo.
