@@ -77,26 +77,72 @@ O servidor é o único dono do baralho, do embaralhamento e da validação de a�
 Ao implementar a máquina de estados do jogo, separe explicitamente o estado público
 da mesa do estado privado por jogador e emita os dois por canais distintos.
 
-### Estado das mesas é in-memory
+### Estado das mesas é in-memory, mas o saldo não
 
 `server/src/tables/table.registry.ts` guarda as mesas num `Map` de módulo, com três
 mesas fixas semeadas na carga. Reiniciar o servidor zera assentos. Só o `User` está no
 Postgres (`prisma/schema.prisma`) — `chips` é `BigInt` e é convertido para `Number` na
-fronteira da API (`auth.service.ts`). Persistir mãos e saldo é fase futura; o registry
-já está escrito prevendo que hand/pot state entrem nele.
+fronteira da API (`auth.service.ts`) e em `users/balance.service.ts`. Persistir o
+histórico de mãos continua sendo fase futura; o registry já está escrito prevendo que
+hand/pot state entrem nele.
+
+**O stack na mesa é o saldo da conta.** Não há buy-in fixo: `seatUser` recebe as
+fichas de fora e quem senta leva o saldo inteiro. O registry continua sem falar com o
+banco — quem lê e grava é `table.handlers.ts`, nos dois únicos instantes em que o
+stack é um número fechado:
+
+- **fim de mão** (`persistTableBalances`) — pela ação, pelo relógio da vez ou por uma
+  saída que encerrou a mão;
+- **`table:leave`** — o `UnseatResult.chips` é o que ele levou embora.
+
+No meio da mão o banco fica com o saldo de antes dela, de propósito: o que está no
+pote ainda não é de ninguém, e um servidor que caia agora devolve a todos o que
+tinham quando a mão começou.
+
+Duas consequências que já custaram caro:
+
+- **Uma mesa por jogador.** `table:join` recusa quem já está sentado em outra
+  (`getSeatedTableId`): o saldo é um só e viaja inteiro, então em duas mesas as mesmas
+  fichas existiriam duas vezes e a mão que acabasse por último apagaria a outra.
+- **Sentar de novo não repõe nada.** Reconexão e segunda aba caem no assento que já
+  existe, e o valor recebido é ignorado — as fichas de quem está jogando são as da
+  mesa, que podem estar bem à frente do último saldo gravado.
+
+Quebrou, quebrou: não existe recompra automática. `playableSeats` deixa de fora quem
+está zerado, então a mesa segue sem ele, e a `TableScene` troca o botão de pronto por
+um "Sem fichas" desligado. Uma loja ou um crédito diário entra aqui, em
+`balance.service.ts`, e é a única coisa que devolve fichas a uma conta zerada.
+
+O saldo novo volta para o dono por `user:balance` (socket a socket — saldo é assunto
+de quem o tem). O `socket-client` o grava no `localStorage` assim que chega, e a
+`LobbyScene` só se redesenha: sem isso o cabeçalho do lobby mostraria o saldo do
+login até o próximo login.
 
 Fluxo de assentos: `table.handlers.ts` trata join/leave/disconnect, sempre emitindo
 `table:state` para a sala `table:<id>` **e** `broadcastLobby(io)` para atualizar a
 contagem no lobby.
 
-**Cair não é sair.** No `disconnect` o assento não é liberado: `markUserDisconnected`
-o marca (`TableSeat.disconnected`, público) e derruba o `ready` — com o pronto de pé
-a mão seguinte começaria sem o jogador na frente da tela, e ele perderia os blinds
-sem estar lá. Uma conexão nova do mesmo usuário desfaz tudo isso já no
-`registerTableHandlers`, antes de qualquer `table:join`. Quem libera o assento de vez
-é o `RECONNECT_GRACE_MS` (45s) em `table.handlers.ts`, que aí sim chama
-`unseatUserEverywhere` — o socket não sabe em que mesa o jogador estava. Enquanto o
-prazo corre a mesa não fica parada: o relógio da vez joga pelo ausente.
+**Cair não é sair — e o assento não é liberado nunca.** No `disconnect`,
+`markUserDisconnected` marca o assento (`TableSeat.disconnected`, público) e derruba
+o `ready`. Só isso. Não há prazo de reconexão nem varredura: a mesa não some porque
+a internet oscilou, e quem volta encontra o próprio assento, as próprias fichas e os
+vizinhos onde estavam — ausentes ou não. Só o próprio jogador se levanta, pelo
+`table:leave`. Uma conexão nova desfaz a marca já no `registerTableHandlers`, antes
+de qualquer `table:join`.
+
+O ausente fica **de fora da próxima mão**, não da mesa: `playableSeats` o exclui,
+então ele não paga blind e — o ponto que trava tudo se esquecido — não entra na
+conta do `canStartHand`, que exige o pronto de *todos* os que podem jogar. Um
+assento ausente nunca fica pronto; contá-lo deixaria a mesa sem começar mais
+nenhuma mão. A mão em que ele já estava, essa segue com ele: o relógio da vez passa
+ou desiste no lugar dele a cada 25s, até o fim, mesmo que não sobre ninguém
+conectado na mesa.
+
+**Uma queda são dois sockets.** O socket.io reconecta em um segundo, mas o servidor
+só percebe a morte do socket antigo pelo ping (até ~45s depois). O `disconnect`
+atrasado chega com o jogador já de volta e jogando; tratá-lo como queda marcava
+como ausente quem estava na frente da tela. Por isso `liveSockets` conta as
+conexões vivas por usuário em `table.handlers.ts`: só a queda da **última** conta.
 
 Do lado do cliente, a `TableScene` cobre a mesa com o aviso "Reconectando..."
 (`ui/dialog.ts`) enquanto o socket está fora, e refaz o `table:join` a cada `connect`
@@ -165,6 +211,102 @@ empacotam o `dist/` do Vite. Antes de introduzir uma dependência ou API no clie
 confirme que funciona dentro de um WebView; evite APIs de navegador além do canvas e de
 um overlay DOM simples.
 
+## Assets (ainda não integrados)
+
+Origem: `E:\Unity\emptyProjectForAssets\New Unity Project\Assets`. São pacotes da Unity
+Asset Store, e o projeto não tem nenhum deles hoje.
+
+**Todo asset usado no jogo vai para `packages/client/public/assets/`**, em `ui/` ou
+`audio/`. O Vite serve essa pasta em `/assets/...` e a copia para o `dist/`, sem passo
+de build nenhum.
+
+O conteúdo dela é ignorado pelo git — só o `README.md` de dentro é versionado, e é ele
+que explica de onde vêm os arquivos e como convertê-los. **Num clone novo a pasta vem
+vazia e o jogo carrega sem arte nem som**; isso é esperado, não é bug.
+
+Só entre aqui o que já está pronto para servir: a pasta inteira vai para o `dist/`,
+então um `.wav` de 39 MB esquecido nela chega ao navegador do jogador.
+
+### UI: `Layer Lab\GUI Pro-FantasyRPG`
+
+O pacote de UI escolhido. O que interessa está em `ResourcesData/Sprites/Component/`,
+com 4528 PNGs organizados em `Button`, `Frame`, `Popup`, `Slider`, `Label-Title`,
+`Chest`, `UI_Etc` e quatro conjuntos de ícones (`IconMisc`, `Icon_EquipIcons`,
+`Icon_Flag`, `Icon_ItemIcons`, `Icon_PictoIcons`).
+
+**Ignore `Prefabs/`, `Scene/`, `Extensions/`, os `.mat` e todos os `.meta`** — são
+formato Unity e não têm uso no Phaser. Só os PNGs atravessam.
+
+Os botões vêm em variações de cor sobre a mesma forma (`Button_Circle_01_Blue`,
+`_Green`, `_Red`…), então dá para mapear estado (normal/hover/desabilitado) trocando o
+sprite em vez de desenhar. Isso substituiria o desenho por código de `ui/button.ts`.
+
+O pacote usa as fontes Alata, Josefin Sans e Play, todas do Google Fonts — **baixe do
+Google Fonts**, não do pacote, e confira a licença de cada uma. A pasta
+`ResourcesData/Fonts` não traz `.ttf`/`.otf`.
+
+### Música de fundo
+
+Dois pacotes, com estilos diferentes o bastante para dividir por tela:
+
+- `25 Rpg Game Tracks` — 29 faixas: `Ambient 1-10`, `Light Ambient 1-5 (Loop)`,
+  `Night Ambient 1-5 (Loop)`, `Action 1-5 (Loop)`, e as pontuais `Victory`, `Death`,
+  `Complete`, `Strange`.
+- `Medieval Music Pack` — 8 faixas (`Medieval Vol. 2 1` a `8`), com `.mp3` além do `.wav`.
+
+Sugestão de uso — as faixas marcadas `(Loop)` são as que emendam sem costura, e por isso
+são as certas para tela parada:
+
+| Momento | Faixa |
+| --- | --- |
+| Login e lobby | `Medieval Vol. 2 *` — dá o clima de taverna antes de sentar |
+| Mesa aguardando jogadores | `Light Ambient * (Loop)` — discreta, não cansa na espera |
+| Mão em andamento | `Night Ambient * (Loop)` — tensão baixa e constante |
+| All-in / river decisivo | `Action * (Loop)` — sobe a temperatura no momento certo |
+| Ganhou o pote | `Victory` (pontual) |
+| Quebrou / saiu sem fichas | `Complete` ou `Strange` — `Death` é dramática demais para poker |
+
+Vale sortear entre as faixas equivalentes a cada sessão em vez de fixar uma: são 5 de
+cada tipo, e repetir sempre a mesma cansa rápido num jogo de partidas longas.
+
+### Converter antes de usar — os arquivos são grandes demais para web
+
+`25 Rpg Game Tracks` tem 625 MB, só `.wav`, com faixas de até 39 MB. O `Medieval Music
+Pack` tem 335 MB (`.wav` ~30 MB; os `.mp3` do próprio pacote já caem para ~7 MB).
+
+Servir isso quebra o jogo no celular. Converta para `.ogg` (com `.mp3` de fallback para
+Safari) em bitrate de música de fundo — algo em torno de 96-128 kbps leva uma faixa
+para 1-3 MB. Carregue sob demanda por cena, não tudo no boot.
+
+### Por que a pasta é ignorada
+
+```gitignore
+packages/client/public/assets/*
+!packages/client/public/assets/README.md
+```
+
+**O motivo é tamanho e histórico, não visibilidade do repositório.** Ele é privado desde
+19/08/2026, e a regra continua valendo — não a remova por achar que era só exposição
+pública.
+
+São ~900 MB de assets, e git guarda cada versão para sempre. Reconverteu uma faixa de
+áudio? As duas ficam no histórico. O clone passa a arrastar tudo, e limpar depois exige
+reescrever o histórico (`filter-repo` + force push), o que quebra qualquer clone
+existente. Se o repositório voltar a ser público um dia, os assets estarão em todos os
+commits passados, não só no atual — privar depois não desfaz isso.
+
+**Nunca force a entrada de um asset com `git add -f`.** Se algum precisar mesmo ser
+versionado, a exceção vai explícita no `.gitignore`, onde fica visível para quem vier
+depois — não por flag na linha de comando.
+
+Em segundo plano, a licença também pesa: pacotes da Unity Asset Store são licenciados
+para uso em projetos, não para redistribuição. Nenhum dos três em uso traz licença
+própria, então valem os termos padrão da Asset Store — confirme o que a sua compra
+permite antes de publicar o jogo.
+
+Os créditos dos pacotes ficam no `README.md` da pasta de assets — mantenha a lista
+atualizada conforme forem entrando.
+
 ## Estado atual
 
 Pronto: auth JWT, socket autenticado, lobby com contagem em tempo real, entrar/sair de
@@ -176,9 +318,16 @@ Texas Hold'em — dealer button girando, blinds cobrados a cada mão, baralho em
 com RNG criptográfico, hole cards entregues socket a socket (`hand:private-state`),
 rodadas de aposta com fold/check/call/raise validados no servidor (`hand:action`),
 flop/turn/river, all-in com side pots e showdown pelo avaliador (`hand:ended`).
-Buy-in fixo de 1000 fichas ao sentar, com recompra automática de quem quebra
-(`BUY_IN` em `table.registry.ts`), até existir loja/saldo por jogador. Sair no meio da
-mão é fold: o pote fica para quem sobrou.
+Saldo por conta: `User.chips` nasce com 1000 (default do Postgres), vira o stack ao
+sentar e é regravado ao fim de cada mão e na saída da mesa.
+
+**Sair no meio da mão é desistir dela, e a mão continua sem ele.** `unseatUser` faz
+`foldSeat` antes de soltar o assento: o que ele já apostou fica no pote, a vez passa
+para o próximo (com prazo novo — quem herda a vez não herda o relógio do outro) e a
+mesa ouve um `hand:action-taken` de fold, senão o assento apenas sumiria e ninguém
+entenderia por que o jogo seguiu. Só quando sobra um é que a mão acaba ali, com o
+pote inteiro para quem ficou. Sair pela porta (`table:leave`) é diferente de cair: a
+queda guarda o assento, a saída o libera na hora.
 
 ### A máquina de apostas mora em `hand-engine.ts`
 
@@ -225,4 +374,6 @@ diferença viraria um contador errado. O cliente conta a partir do que recebeu, 
 únicas coisas que mudam sem evento nenhum, e mexem só nos objetos já desenhados
 (refazer a cena a cada segundo engoliria o toque de quem está com o dedo no botão).
 
-Ainda não existe: histórico de mãos e persistência — reiniciar o servidor zera tudo.
+Ainda não existe: histórico de mãos, e loja ou crédito para repor uma conta zerada.
+Reiniciar o servidor zera assentos e mesas — o saldo das contas sobrevive, menos o que
+estiver no meio de uma mão.
