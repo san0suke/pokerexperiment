@@ -86,12 +86,18 @@ export class LoginScene extends Phaser.Scene {
             <button type="button" class="mode-btn" data-mode="login" aria-pressed="true">Entrar</button>
             <button type="button" class="mode-btn" data-mode="register" aria-pressed="false">Criar conta</button>
           </div>
-          <input name="username" placeholder="Usuário" autocomplete="username"
-                 autocapitalize="none" autocorrect="off" aria-label="Usuário" />
-          <input name="email" type="email" placeholder="E-mail" autocomplete="email"
-                 autocapitalize="none" autocorrect="off" aria-label="E-mail" hidden />
-          <input name="password" type="password" placeholder="Senha"
-                 autocomplete="current-password" aria-label="Senha" />
+          <label class="field field-user">
+            <input name="username" placeholder="Usuário" autocomplete="username"
+                   autocapitalize="none" autocorrect="off" aria-label="Usuário" />
+          </label>
+          <label class="field field-mail" hidden>
+            <input name="email" type="email" placeholder="E-mail" autocomplete="email"
+                   autocapitalize="none" autocorrect="off" aria-label="E-mail" />
+          </label>
+          <label class="field field-lock">
+            <input name="password" type="password" placeholder="Senha"
+                   autocomplete="current-password" aria-label="Senha" />
+          </label>
           <button type="submit" class="submit-btn">Entrar</button>
           <p id="auth-error" class="form-error" role="alert"></p>
         </form>
@@ -113,7 +119,8 @@ export class LoginScene extends Phaser.Scene {
         mode = button.dataset.mode as 'login' | 'register';
         const registering = mode === 'register';
 
-        emailInput.hidden = !registering;
+        // Esconde o rótulo, não o campo: o ícone mora no ::before do rótulo.
+        emailInput.closest('label')!.hidden = !registering;
         emailInput.required = registering;
         submitButton.textContent = registering ? 'Criar conta' : 'Entrar';
         // Tells the password manager to offer a new password instead of a saved one.
@@ -126,9 +133,18 @@ export class LoginScene extends Phaser.Scene {
       });
     });
 
+    const inputs = form.querySelectorAll<HTMLInputElement>('input');
+    // O pacote de UI traz uma moldura vermelha para campo recusado; `has-error`
+    // é o que o CSS usa para trocá-la. Some ao primeiro toque em qualquer campo,
+    // senão o vermelho fica lá enquanto o jogador já está corrigindo.
+    const setError = (on: boolean) =>
+      inputs.forEach((input) => input.classList.toggle('has-error', on));
+    inputs.forEach((input) => input.addEventListener('input', () => setError(false)));
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       errorText.textContent = '';
+      setError(false);
       submitButton.disabled = true;
 
       const data = new FormData(form);
@@ -145,6 +161,7 @@ export class LoginScene extends Phaser.Scene {
         this.scene.start('LobbyScene');
       } catch (error) {
         errorText.textContent = error instanceof Error ? error.message : 'Falha na autenticação';
+        setError(true);
         submitButton.disabled = false;
       }
     });

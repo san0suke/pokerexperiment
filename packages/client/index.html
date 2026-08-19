@@ -10,9 +10,12 @@
     <style>
       :root {
         --felt: #0b3d2e;
+        --felt-dark: #06251b;
+        --wood: #2a1a0f;
         --gold: #f5d47a;
-        --ink: #ffffff;
-        --muted: #a8ccbf;
+        --gold-deep: #b8860b;
+        --ink: #f6efe2;
+        --muted: #9bb8ab;
         --danger: #ff8a80;
       }
 
@@ -21,9 +24,11 @@
         margin: 0;
         padding: 0;
         height: 100%;
-        background: var(--felt);
         overflow: hidden;
         font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+        /* Feltro: verde com vinheta, para a mesa não parecer papel de parede liso. */
+        background: radial-gradient(ellipse at 50% 38%, #14563f 0%, var(--felt) 45%, var(--felt-dark) 100%)
+          var(--felt-dark);
       }
 
       /*
@@ -101,86 +106,201 @@
 
       .brand {
         margin: 0;
-        font-size: clamp(40px, 13vw, 72px);
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: clamp(38px, 12vw, 64px);
         line-height: 1;
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        color: var(--gold);
+        font-weight: 700;
+        letter-spacing: 0.14em;
         text-align: center;
-        text-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+        /* Ouro escovado: o degradê entra na letra via background-clip. */
+        background: linear-gradient(180deg, #fff3c4 0%, var(--gold) 38%, var(--gold-deep) 70%, #f2e2a8 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.6));
+      }
+      .brand::after {
+        content: '';
+        display: block;
+        width: 56%;
+        height: 2px;
+        margin: 10px auto 0;
+        background: linear-gradient(90deg, transparent, var(--gold-deep), var(--gold), var(--gold-deep), transparent);
       }
 
+      /*
+       * Superfícies (feltro, madeira, ouro) são CSS; só os botões vêm de sprite,
+       * do Kenney UI Pack 2.0 (CC0), em `public/assets/ui/`.
+       *
+       * A divisão não é arbitrária: degradê descreve metal e tecido melhor que um
+       * PNG esticado, e o pacote não traz painel nem campo de texto. Os botões
+       * ganham o contrário — a profundidade desenhada dá um toque que sombra de
+       * CSS não reproduz.
+       *
+       * Rodar `node scripts/prepare-assets.mjs` recria os arquivos.
+       */
       .card {
         box-sizing: border-box;
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 14px;
         width: min(360px, 100%);
-        padding: clamp(20px, 5vw, 28px);
-        background: rgba(0, 0, 0, 0.55);
-        border-radius: 14px;
+        padding: clamp(22px, 5vw, 30px);
         color: var(--ink);
+        border-radius: 14px;
+        /* Moldura de madeira com filete de ouro por dentro. */
+        border: 2px solid var(--gold-deep);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 32%),
+          linear-gradient(180deg, #123a2c 0%, #0a2a1f 100%);
+        box-shadow:
+          0 0 0 6px var(--wood),
+          0 0 0 8px var(--gold-deep),
+          0 18px 40px rgba(0, 0, 0, 0.55),
+          inset 0 1px 0 rgba(245, 212, 122, 0.25);
       }
 
+      /*
+       * As abas são texto com filete dourado, não botões de sprite. Com sprite
+       * nos dois, a aba inativa pesava mais na tela que o botão de entrar — duas
+       * peças grandes disputando a atenção. Só a ação principal usa sprite.
+       */
       .mode-switch {
         display: flex;
-        gap: 8px;
+        gap: 4px;
+        margin-bottom: 2px;
+        border-bottom: 1px solid rgba(245, 212, 122, 0.22);
       }
       .mode-btn {
         flex: 1;
-        padding: 10px;
+        padding: 9px 4px 10px;
+        font-family: Georgia, 'Times New Roman', serif;
         font-size: 15px;
-        color: var(--ink);
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        border-radius: 8px;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        background: none;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
         cursor: pointer;
       }
       .mode-btn[aria-pressed='true'] {
-        color: var(--felt);
-        background: var(--gold);
-        border-color: var(--gold);
-        font-weight: 700;
+        color: var(--gold);
+        border-bottom-color: var(--gold);
+        text-shadow: 0 0 12px rgba(245, 212, 122, 0.35);
       }
 
+      /*
+       * Botão do Kenney: 192x64 com um lábio de profundidade embaixo. O slice
+       * inferior é maior que o superior justamente para preservar esse lábio ao
+       * esticar.
+       */
+      .submit-btn {
+        border-style: solid;
+        border-width: 16px 20px 22px;
+        border-image: url('/assets/ui/button-gold.png') 16 20 22 fill / 16px 20px 22px / 0 stretch;
+        background: none;
+        color: #4a2c00;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-weight: 700;
+        text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
+        cursor: pointer;
+      }
+      .submit-btn:active:not(:disabled) {
+        /* O sprite não tem estado pressionado: afunda 2px para o toque responder. */
+        transform: translateY(2px);
+      }
+
+      .field {
+        position: relative;
+        display: block;
+      }
+      /* `display: block` acima vence o `hidden` do navegador; sem isto o campo
+         de e-mail continuaria visível no modo de login. */
+      .field[hidden] {
+        display: none;
+      }
+      /*
+       * Ícones em SVG embutido, não em arquivo: são três glifos simples, ficam da
+       * cor exata do ouro sem um PNG para cada tom, e não somam requisição nem
+       * dependência de licença.
+       */
+      .field::before {
+        content: '';
+        position: absolute;
+        left: 14px;
+        top: 50%;
+        width: 18px;
+        height: 18px;
+        transform: translateY(-50%);
+        background: no-repeat center / contain;
+        opacity: 0.75;
+        pointer-events: none;
+      }
+      .field-user::before {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f5d47a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='8' r='3.6'/%3E%3Cpath d='M4.5 20.5c0-3.6 3.4-5.6 7.5-5.6s7.5 2 7.5 5.6'/%3E%3C/svg%3E");
+      }
+      .field-mail::before {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f5d47a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.5' y='5' width='19' height='14' rx='2'/%3E%3Cpath d='m3.5 7 8.5 6 8.5-6'/%3E%3C/svg%3E");
+      }
+      .field-lock::before {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f5d47a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4.5' y='10' width='15' height='10.5' rx='2'/%3E%3Cpath d='M8 10V7a4 4 0 0 1 8 0v3'/%3E%3C/svg%3E");
+      }
+
+      /* Campo escavado no feltro: fundo mais escuro que o painel e sombra interna. */
       .card input {
         box-sizing: border-box;
+        display: block;
         width: 100%;
-        padding: 12px;
+        padding: 12px 14px 12px 42px;
         /* 16px keeps iOS Safari from zooming in when a field takes focus. */
         font-size: 16px;
+        font-family: inherit;
         color: var(--ink);
-        background: rgba(255, 255, 255, 0.1);
-        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: linear-gradient(180deg, #05201780, #0000), #061c14;
+        border: 1px solid rgba(245, 212, 122, 0.28);
         border-radius: 8px;
+        box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
+        transition: border-color 120ms, box-shadow 120ms;
       }
       .card input::placeholder {
         color: var(--muted);
       }
       .card input:focus {
-        outline: 2px solid var(--gold);
-        outline-offset: 1px;
+        outline: none;
+        border-color: var(--gold);
+        box-shadow:
+          inset 0 2px 6px rgba(0, 0, 0, 0.6),
+          0 0 0 3px rgba(245, 212, 122, 0.22);
+      }
+      /* Marcado pelo LoginScene quando o servidor recusa o envio. */
+      .card input.has-error {
+        border-color: var(--danger);
+        box-shadow:
+          inset 0 2px 6px rgba(0, 0, 0, 0.6),
+          0 0 0 3px rgba(255, 138, 128, 0.2);
       }
 
+      /* A moldura e as cores vêm da regra compartilhada com .mode-btn, acima. */
       .submit-btn {
-        padding: 14px;
-        font-size: 16px;
-        font-weight: 700;
-        color: var(--felt);
-        background: var(--gold);
-        border: 0;
-        border-radius: 8px;
-        cursor: pointer;
+        margin-top: 2px;
+        padding: 0;
+        font-size: 18px;
+        letter-spacing: 0.06em;
       }
       .submit-btn:disabled {
         opacity: 0.6;
         cursor: default;
       }
 
+      /* A altura mínima fica reservada de propósito: sem ela o card salta de
+         tamanho quando o erro aparece. A margem negativa só encosta o texto no
+         botão, para o espaço reservado não virar um vão morto no rodapé. */
       .form-error {
-        margin: 0;
-        min-height: 18px;
+        margin: -8px 0 0;
+        min-height: 17px;
         font-size: 13px;
+        text-align: center;
         color: var(--danger);
       }
 
@@ -196,7 +316,8 @@
         }
         .card {
           gap: 8px;
-          padding: 16px;
+          /* Só o respiro interno encolhe; a borda da moldura fica intacta. */
+          padding: 14px;
         }
       }
 

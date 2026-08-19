@@ -211,101 +211,56 @@ empacotam o `dist/` do Vite. Antes de introduzir uma dependência ou API no clie
 confirme que funciona dentro de um WebView; evite APIs de navegador além do canvas e de
 um overlay DOM simples.
 
-## Assets (ainda não integrados)
+## Assets
 
-Origem: `E:\Unity\emptyProjectForAssets\New Unity Project\Assets`. São pacotes da Unity
-Asset Store, e o projeto não tem nenhum deles hoje.
+`packages/client/public/assets/` é o destino de tudo: `ui/` para imagens, `audio/` para
+som. O Vite serve a pasta em `/assets/...` e a copia para o `dist/` sem passo de build.
+Ela inteira vai para o `dist/`, então só entra aqui o que já está pronto para servir —
+um `.wav` de 39 MB esquecido nela chega ao navegador do jogador.
 
-**Todo asset usado no jogo vai para `packages/client/public/assets/`**, em `ui/` ou
-`audio/`. O Vite serve essa pasta em `/assets/...` e a copia para o `dist/`, sem passo
-de build nenhum.
+As duas pastas seguem regras opostas de versionamento, e a diferença é deliberada.
 
-O conteúdo dela é ignorado pelo git — só o `README.md` de dentro é versionado, e é ele
-que explica de onde vêm os arquivos e como convertê-los. **Num clone novo a pasta vem
-vazia e o jogo carrega sem arte nem som**; isso é esperado, não é bug.
+### `ui/` — versionado (Kenney, CC0)
 
-Só entre aqui o que já está pronto para servir: a pasta inteira vai para o `dist/`,
-então um `.wav` de 39 MB esquecido nela chega ao navegador do jogador.
+[Kenney UI Pack 2.0](https://kenney.nl/assets/ui-pack), **CC0**: uso comercial livre,
+sem atribuição obrigatória, redistribuição permitida. Como os arquivos usados têm
+poucos KB, ficam no git — nem a licença nem o tamanho justificam mantê-los fora, e
+assim um clone novo já abre com a arte no lugar.
 
-### UI: `Layer Lab\GUI Pro-FantasyRPG`
+Para acrescentar outro sprite, copie do pacote e commite junto. O pacote ainda tem
+checkboxes (servem ao "pronto" da mesa), sliders (o valor do raise), setas e ícones.
 
-O pacote de UI escolhido. O que interessa está em `ResourcesData/Sprites/Component/`,
-com 4528 PNGs organizados em `Button`, `Frame`, `Popup`, `Slider`, `Label-Title`,
-`Chest`, `UI_Etc` e quatro conjuntos de ícones (`IconMisc`, `Icon_EquipIcons`,
-`Icon_Flag`, `Icon_ItemIcons`, `Icon_PictoIcons`).
+**Só os controles vêm de sprite.** Painel, campos de texto, feltro de fundo e título
+são CSS, no `index.html`. A divisão não é arbitrária: degradê descreve tecido e metal
+melhor que um PNG esticado, e o pacote não traz painel nem campo de texto. Os botões
+ganham o contrário — a profundidade desenhada dá um toque que sombra de CSS não imita.
 
-**Ignore `Prefabs/`, `Scene/`, `Extensions/`, os `.mat` e todos os `.meta`** — são
-formato Unity e não têm uso no Phaser. Só os PNGs atravessam.
+Os sprites do Kenney são 9-slice: aplicados com `border-image`, que estica só o miolo e
+preserva os cantos. O botão é 192x64 com um lábio de profundidade embaixo, por isso o
+slice inferior é maior que o superior.
 
-Os botões vêm em variações de cor sobre a mesma forma (`Button_Circle_01_Blue`,
-`_Green`, `_Red`…), então dá para mapear estado (normal/hover/desabilitado) trocando o
-sprite em vez de desenhar. Isso substituiria o desenho por código de `ui/button.ts`.
+### `audio/` — ignorado pelo git
 
-O pacote usa as fontes Alata, Josefin Sans e Play, todas do Google Fonts — **baixe do
-Google Fonts**, não do pacote, e confira a licença de cada uma. A pasta
-`ResourcesData/Fonts` não traz `.ttf`/`.otf`.
+Trilhas de pacotes da Unity Asset Store, em
+`E:\Unity\emptyProjectForAssets\New Unity Project\Assets\` (`25 Rpg Game Tracks`,
+`Medieval Music Pack`). Ficam fora por dois motivos que aqui de fato valem: são
+licenciados para uso e não para redistribuição, e passam de 600 MB — git guarda cada
+versão para sempre, e limpar depois exige reescrever o histórico.
 
-### Música de fundo
+**Num clone novo a pasta vem vazia e o jogo roda sem som. É esperado, não é bug.** O
+`README.md` da pasta tem a origem de cada faixa e os comandos de conversão para
+`.ogg`/`.mp3`; os originais são grandes demais para servir direto.
 
-Dois pacotes, com estilos diferentes o bastante para dividir por tela:
-
-- `25 Rpg Game Tracks` — 29 faixas: `Ambient 1-10`, `Light Ambient 1-5 (Loop)`,
-  `Night Ambient 1-5 (Loop)`, `Action 1-5 (Loop)`, e as pontuais `Victory`, `Death`,
-  `Complete`, `Strange`.
-- `Medieval Music Pack` — 8 faixas (`Medieval Vol. 2 1` a `8`), com `.mp3` além do `.wav`.
-
-Sugestão de uso — as faixas marcadas `(Loop)` são as que emendam sem costura, e por isso
-são as certas para tela parada:
-
-| Momento | Faixa |
-| --- | --- |
-| Login e lobby | `Medieval Vol. 2 *` — dá o clima de taverna antes de sentar |
-| Mesa aguardando jogadores | `Light Ambient * (Loop)` — discreta, não cansa na espera |
-| Mão em andamento | `Night Ambient * (Loop)` — tensão baixa e constante |
-| All-in / river decisivo | `Action * (Loop)` — sobe a temperatura no momento certo |
-| Ganhou o pote | `Victory` (pontual) |
-| Quebrou / saiu sem fichas | `Complete` ou `Strange` — `Death` é dramática demais para poker |
-
-Vale sortear entre as faixas equivalentes a cada sessão em vez de fixar uma: são 5 de
-cada tipo, e repetir sempre a mesma cansa rápido num jogo de partidas longas.
-
-### Converter antes de usar — os arquivos são grandes demais para web
-
-`25 Rpg Game Tracks` tem 625 MB, só `.wav`, com faixas de até 39 MB. O `Medieval Music
-Pack` tem 335 MB (`.wav` ~30 MB; os `.mp3` do próprio pacote já caem para ~7 MB).
-
-Servir isso quebra o jogo no celular. Converta para `.ogg` (com `.mp3` de fallback para
-Safari) em bitrate de música de fundo — algo em torno de 96-128 kbps leva uma faixa
-para 1-3 MB. Carregue sob demanda por cena, não tudo no boot.
-
-### Por que a pasta é ignorada
-
-```gitignore
-packages/client/public/assets/*
-!packages/client/public/assets/README.md
-```
-
-**O motivo é tamanho e histórico, não visibilidade do repositório.** Ele é privado desde
-19/08/2026, e a regra continua valendo — não a remova por achar que era só exposição
-pública.
-
-São ~900 MB de assets, e git guarda cada versão para sempre. Reconverteu uma faixa de
-áudio? As duas ficam no histórico. O clone passa a arrastar tudo, e limpar depois exige
-reescrever o histórico (`filter-repo` + force push), o que quebra qualquer clone
-existente. Se o repositório voltar a ser público um dia, os assets estarão em todos os
-commits passados, não só no atual — privar depois não desfaz isso.
-
-**Nunca force a entrada de um asset com `git add -f`.** Se algum precisar mesmo ser
+**Nunca force a entrada de um áudio com `git add -f`.** Se algum precisar mesmo ser
 versionado, a exceção vai explícita no `.gitignore`, onde fica visível para quem vier
 depois — não por flag na linha de comando.
 
-Em segundo plano, a licença também pesa: pacotes da Unity Asset Store são licenciados
-para uso em projetos, não para redistribuição. Nenhum dos três em uso traz licença
-própria, então valem os termos padrão da Asset Store — confirme o que a sua compra
-permite antes de publicar o jogo.
+### Ao escolher assets novos
 
-Os créditos dos pacotes ficam no `README.md` da pasta de assets — mantenha a lista
-atualizada conforme forem entrando.
+O primeiro pacote testado aqui foi um kit de RPG de fantasia, e não funcionou: hexágonos
+entalhados e ouro saturado brigam com a mesa de poker. O problema era de casamento
+estético, não de ajuste de valores. Antes de aplicar um pacote, confira se o estilo dele
+combina com feltro, madeira e ouro — trocar depois custa mais que escolher certo.
 
 ## Estado atual
 

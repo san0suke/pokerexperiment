@@ -6,8 +6,12 @@ build/
 .DS_Store
 packages/server/prisma/generated/
 
-# Assets de terceiros (Unity Asset Store): licenciados para uso em projetos, não para
-# redistribuição — este repositório é público. Ficam locais e são montados por máquina;
-# o README explica de onde vêm e como converter.
-packages/client/public/assets/*
-!packages/client/public/assets/README.md
+# Áudio: as trilhas vêm de pacotes da Unity Asset Store, licenciados para uso em
+# projetos e não para redistribuição, e os originais passam de 600 MB. Ficam locais;
+# o README da pasta explica de onde vêm e como converter.
+#
+# `ui/` NÃO entra aqui: são assets do Kenney, CC0, e os arquivos usados têm poucos KB.
+# Nem a licença nem o tamanho justificam mantê-los fora — versionados, um clone novo
+# já abre com a arte no lugar.
+packages/client/public/assets/audio/*
+!packages/client/public/assets/audio/.gitkeep

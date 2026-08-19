@@ -1,60 +1,48 @@
 # Assets
 
-**O conteúdo desta pasta não é versionado.** Só este README vai para o git.
+Duas origens, com regras diferentes de versionamento.
 
-São ~900 MB de arquivos, e git guarda cada versão para sempre: uma faixa reconvertida
-deixa as duas no histórico, o clone passa a arrastar tudo, e limpar depois exige
-reescrever o histórico. Por isso os assets ficam locais e são montados por máquina.
+## `ui/` — versionado
 
-Em segundo plano, a licença também pesa — são pacotes da Unity Asset Store, licenciados
-para uso em projetos e não para redistribuição.
+Assets do **[Kenney UI Pack 2.0](https://kenney.nl/assets/ui-pack)**, licença **CC0**
+(domínio público): livres para uso comercial, sem exigência de atribuição, e a
+redistribuição é permitida — inclusive dentro deste repositório.
 
-Consequência prática: **num clone novo esta pasta vem vazia e o jogo carrega sem arte
-nem som.** Não é bug; é preciso montá-la seguindo o passo a passo abaixo.
+Como são poucos KB, ficam versionados. Um clone novo abre com a arte no lugar, sem
+passo de preparação.
 
-## Estrutura
+Em uso hoje:
 
-```
-assets/
-  ui/      PNGs de interface (botões, molduras, popups, ícones)
-  audio/   Faixas de música já convertidas para web (.ogg + .mp3)
-```
+| Arquivo | Origem no pacote |
+| --- | --- |
+| `button-gold.png` | `PNG/Yellow/Default/button_rectangle_depth_gradient.png` |
 
-Só entra aqui o que já está pronto para servir. O Vite copia esta pasta inteira para o
-`dist/`, então um `.wav` de 39 MB esquecido aqui vai parar no build e no navegador do
-jogador.
+Para acrescentar outro, copie do pacote e commite junto — não há motivo para deixar
+fora. O pacote também tem checkboxes (o "pronto" da mesa), sliders (o valor do raise),
+setas e ícones.
 
-## De onde vem
+**Só os controles vêm de sprite.** Painel, campos de texto, fundo de feltro e o título
+são CSS, no `index.html`: degradê descreve tecido e metal melhor que um PNG esticado —
+e o pacote não traz painel nem campo de texto de qualquer forma.
+
+## `audio/` — **não** versionado
+
+As trilhas vêm de pacotes da Unity Asset Store, licenciados para uso em projetos e não
+para redistribuição. Os originais passam de 600 MB e git guarda cada versão para
+sempre, então ficam locais e são montados por máquina.
+
+**Num clone novo esta pasta vem vazia e o jogo roda sem som.** É esperado.
 
 Origem na máquina de desenvolvimento:
 
 ```
-E:\Unity\emptyProjectForAssets\New Unity Project\Assets
+E:\Unity\emptyProjectForAssets\New Unity Project\Assets\
+  25 Rpg Game Tracks\      (29 faixas, só .wav, 625 MB)
+  Medieval Music Pack\     (8 faixas, .wav e .mp3, 335 MB)
 ```
 
-### `ui/` — Layer Lab GUI Pro-FantasyRPG
-
-```
-Layer Lab\GUI Pro-FantasyRPG\ResourcesData\Sprites\Component\
-```
-
-Copie só os PNGs das categorias em uso (`Button`, `Frame`, `Popup`, `Slider`,
-`Label-Title`, ícones). São 4528 arquivos no pacote inteiro — copiar tudo infla o
-`dist/` sem motivo.
-
-Ignore `Prefabs/`, `Scene/`, `Extensions/`, `.mat` e `.meta`: são formato Unity e não
-têm uso no Phaser.
-
-### `audio/` — as duas trilhas
-
-```
-25 Rpg Game Tracks\        (29 faixas, só .wav, 625 MB)
-Medieval Music Pack\       (8 faixas, .wav e .mp3, 335 MB)
-```
-
-**Converta antes de copiar.** Os originais são grandes demais para web — há `.wav` de
-até 39 MB, que no celular trava o carregamento. Para música de fundo, 96-128 kbps
-resolve e leva cada faixa para 1-3 MB:
+**Converta antes de copiar.** Há `.wav` de até 39 MB, que no celular trava o
+carregamento. Para música de fundo, 96-128 kbps resolve e leva cada faixa para 1-3 MB:
 
 ```bash
 ffmpeg -i "Ambient 3.wav" -c:a libvorbis -b:a 112k ambient-3.ogg
@@ -69,12 +57,9 @@ renomeie para minúsculas com hífen ao converter.
 
 ## Créditos
 
-Os pacotes usados precisam ser creditados no jogo. Manter a lista aqui conforme forem
-entrando, para não descobrir na véspera do lançamento quem precisa aparecer.
+CC0 não exige atribuição, e a licença da Unity Asset Store não permite redistribuir —
+mas creditar quem fez é boa prática, e a lista precisa existir antes do lançamento.
 
-- Layer Lab — GUI Pro-FantasyRPG (interface)
+- Kenney — UI Pack 2.0 (interface), CC0
 - 25 RPG Game Tracks (música)
 - Medieval Music Pack (música)
-
-As fontes do pacote de UI (Alata, Josefin Sans, Play) são do Google Fonts e têm licença
-própria — baixe do Google Fonts, não do pacote.
