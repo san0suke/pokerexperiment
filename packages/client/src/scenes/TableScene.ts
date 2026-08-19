@@ -23,6 +23,10 @@ const WIDE_LABEL_MIN_WIDTH = 600;
 const MAX_OVAL_RATIO = 1.7;
 /** Acima disso cabem todos os botões de aposta numa linha só. */
 const WIDE_CONTROLS_MIN_WIDTH = 560;
+/** Largura das cartas de um assento, em fração do raio do círculo. */
+const SEAT_CARD_WIDTH_RATIO = 0.66;
+/** Quanto a base das cartas entra no círculo do assento, em fração do raio. */
+const SEAT_CARD_OVERLAP_RATIO = 0.3;
 
 /**
  * Mesa de poker: assentos em volta do feltro, cartas comunitárias, pote e os
@@ -525,8 +529,11 @@ export class TableScene extends Phaser.Scene {
     // desenhado abaixo do círculo.
     const seatRadius = Phaser.Math.Clamp(Math.min(areaWidth, areaHeight) * 0.12, 20, 44);
     const labelRoom = space(this.layout, 18, 14);
+    // Acima do assento ficam as cartas e abaixo o rótulo de fichas; a folga é a
+    // maior das duas, senão o showdown corta as cartas dos assentos de cima.
+    const marginY = Math.max(seatRadius + labelRoom, this.seatCardBox(seatRadius).room);
     let ringRadiusX = Math.max(seatRadius, areaWidth / 2 - seatRadius);
-    let ringRadiusY = Math.max(seatRadius, areaHeight / 2 - seatRadius - labelRoom);
+    let ringRadiusY = Math.max(seatRadius, areaHeight / 2 - marginY);
 
     // Ocupar toda a área em pé transformaria a mesa num tubo, com os jogadores
     // laterais espremidos contra as bordas da tela. O limite de proporção mantém
@@ -547,7 +554,7 @@ export class TableScene extends Phaser.Scene {
       const angle = Math.PI / 2 + (index / seats.length) * Math.PI * 2;
       const x = centerX + Math.cos(angle) * ringRadiusX;
       const y = centerY + Math.sin(angle) * ringRadiusY;
-      this.buildSeat(seat, x, y, seatRadius);
+      this.buildSeat(seat, x, y, seatRadius, centerX);
     });
   }
 
@@ -560,84 +567,91 @@ export class TableScene extends Phaser.Scene {
   ): void {
     const hand = this.state?.hand;
     const maxWidth = ringRadiusX * 1.5;
+    // O feltro não esvazia quando a mão acaba: sem mão em andamento o board vem
+    // do resultado e fica na mesa até a próxima começar.
+    const board = hand?.communityCards ?? this.result?.communityCards ?? [];
 
-    if (!hand) {
-      const lines = this.result ? describeResult(this.result) : ['Aguardando os jogadores'];
-      const text = this.add
-        .text(centerX, centerY, lines.join('\n'), {
-          fontSize: `${px(this.layout, 16, 12)}px`,
-          color: this.result ? '#f5d47a' : '#7fb8a2',
-          align: 'center',
-          lineSpacing: space(this.layout, 4, 3),
-          wordWrap: { width: maxWidth },
+    const label = hand
+      ? this.add.text(0, 0, `Pote: ${hand.pot}`, {
+          fontSize: `${px(this.layout, 20, 14)}px`,
+          fontStyle: 'bold',
+          color: '#f5d47a',
         })
-        .setOrigin(0.5);
-      this.root.add(text);
+      : this.add.text(
+          0,
+          0,
+          (this.result ? describeResult(this.result) : ['Aguardando os jogadores']).join('\n'),
+          {
+            fontSize: `${px(this.layout, 16, 12)}px`,
+            color: this.result ? '#f5d47a' : '#7fb8a2',
+            align: 'center',
+            lineSpacing: space(this.layout, 4, 3),
+            wordWrap: { width: maxWidth },
+          },
+        );
+    if (hand) {
+      fitText(label, maxWidth);
+    }
+
+    if (board.length === 0) {
+      label.setPosition(centerX, centerY).setOrigin(0.5);
+      this.root.add(label);
       return;
     }
 
-    let potY = centerY;
+    const gap = space(this.layout, 6, 4);
+    const cardWidth = Math.max(
+      24,
+      Math.min(
+        Math.round(56 * this.layout.ui),
+        Math.floor((maxWidth - gap * (board.length - 1)) / board.length),
+        Math.floor((ringRadiusY * 1.1) / CARD_ASPECT),
+      ),
+    );
+    const cardHeight = Math.round(cardWidth * CARD_ASPECT);
+    const spacing = space(this.layout, 12, 8);
 
-    if (hand.communityCards.length > 0) {
-      const gap = space(this.layout, 6, 4);
-      const cardWidth = Math.max(
-        24,
-        Math.min(
-          Math.round(56 * this.layout.ui),
-          Math.floor((maxWidth - gap * (hand.communityCards.length - 1)) / hand.communityCards.length),
-          Math.floor((ringRadiusY * 1.1) / CARD_ASPECT),
-        ),
+    // Cartas e texto centrados como um bloco só: o resultado ocupa duas ou três
+    // linhas, e ancorar tudo no centro da mesa jogaria o texto sobre os assentos.
+    const top = centerY - (cardHeight + spacing + label.height) / 2;
+
+    board.forEach((card, index) => {
+      const offset = (index - (board.length - 1) / 2) * (cardWidth + gap);
+      this.root.add(
+        createCardFace(this, {
+          card,
+          x: centerX + offset,
+          y: top + cardHeight / 2,
+          width: cardWidth,
+        }),
       );
-      const cardHeight = Math.round(cardWidth * CARD_ASPECT);
-      const boardY = centerY - cardHeight * 0.15;
+    });
 
-      hand.communityCards.forEach((card, index) => {
-        const offset = (index - (hand.communityCards.length - 1) / 2) * (cardWidth + gap);
-        this.root.add(
-          createCardFace(this, { card, x: centerX + offset, y: boardY, width: cardWidth }),
-        );
-      });
-
-      potY = boardY + cardHeight / 2 + space(this.layout, 12, 8);
-    }
-
-    const pot = this.add
-      .text(centerX, potY, `Pote: ${hand.pot}`, {
-        fontSize: `${px(this.layout, 20, 14)}px`,
-        fontStyle: 'bold',
-        color: '#f5d47a',
-      })
-      .setOrigin(0.5, hand.communityCards.length > 0 ? 0 : 0.5);
-    fitText(pot, maxWidth);
-    this.root.add(pot);
+    label.setPosition(centerX, top + cardHeight + spacing).setOrigin(0.5, 0);
+    this.root.add(label);
   }
 
-  private buildSeat(seat: TableSeat, x: number, y: number, seatRadius: number): void {
+  /**
+   * Onde ficam as cartas de um assento: acima do círculo, encostando na borda de
+   * cima. `room` é a altura que elas ocupam a partir do centro do assento — a
+   * mesa usa isso para não empurrar os assentos de cima para fora da área.
+   */
+  private seatCardBox(seatRadius: number): { width: number; height: number; room: number } {
+    const width = Math.max(14, Math.round(seatRadius * SEAT_CARD_WIDTH_RATIO));
+    const height = Math.round(width * CARD_ASPECT);
+    return { width, height, room: seatRadius * (1 - SEAT_CARD_OVERLAP_RATIO) + height };
+  }
+
+  private buildSeat(
+    seat: TableSeat,
+    x: number,
+    y: number,
+    seatRadius: number,
+    centerX: number,
+  ): void {
     const occupied = seat.user !== null;
     const shown = this.result?.showdown.find((entry) => entry.seatIndex === seat.seatIndex);
     const isMine = seat.seatIndex === this.mySeat()?.seatIndex;
-
-    // Cartas do assento: abertas no showdown, de costas durante a mão.
-    const revealed: (Card | null)[] | null = shown
-      ? shown.holeCards
-      : seat.inHand && !seat.folded
-        ? [null, null]
-        : null;
-
-    if (revealed) {
-      const cardWidth = Math.round(seatRadius * (shown ? 0.7 : 0.62));
-      const spread = Math.round(cardWidth * 0.55);
-      revealed.forEach((card, index) => {
-        this.root.add(
-          createCardFace(this, {
-            card,
-            x: x + (index === 0 ? -spread : spread),
-            y: y - seatRadius * 0.78,
-            width: cardWidth,
-          }),
-        );
-      });
-    }
 
     const circle = this.add
       .circle(x, y, seatRadius, occupied ? (seat.folded ? 0x123f33 : 0x1f7a5c) : 0x0e3f31)
@@ -665,6 +679,31 @@ export class TableScene extends Phaser.Scene {
       return;
     }
 
+    // Cartas do assento: de costas enquanto a mão corre e abertas no showdown,
+    // para todo mundo que chegou vivo ao fim da mão. Vão depois do círculo e
+    // acima dele — desenhadas antes, ficavam escondidas atrás do nome.
+    const revealed: (Card | null)[] | null = shown
+      ? shown.holeCards
+      : seat.inHand && !seat.folded
+        ? [null, null]
+        : null;
+
+    if (revealed && revealed.length > 0) {
+      const { width: cardWidth, height: cardHeight, room } = this.seatCardBox(seatRadius);
+      const spread = Math.round(cardWidth * 0.55);
+      const cardY = y - room + cardHeight / 2;
+      revealed.forEach((card, index) => {
+        this.root.add(
+          createCardFace(this, {
+            card,
+            x: x + (index - (revealed.length - 1) / 2) * spread * 2,
+            y: cardY,
+            width: cardWidth,
+          }),
+        );
+      });
+    }
+
     const detail = this.add
       .text(x, y + seatRadius + space(this.layout, 4, 3), this.seatDetail(seat, shown?.description), {
         fontSize: `${px(this.layout, 13, 10)}px`,
@@ -674,18 +713,20 @@ export class TableScene extends Phaser.Scene {
     fitText(detail, seatRadius * 3);
     this.root.add(detail);
 
-    // A aposta da rua fica entre o assento e o centro da mesa, como as fichas
-    // empurradas para a frente numa mesa de verdade.
+    // A aposta da rua fica ao lado do assento, virada para o centro da mesa,
+    // como as fichas empurradas para a frente numa mesa de verdade. Ao lado, e
+    // não acima, porque acima estão as cartas.
     if (seat.bet > 0) {
+      const toCenter = x <= centerX ? 1 : -1;
       const bet = this.add
-        .text(x, y - seatRadius - space(this.layout, 6, 4), `${seat.bet}`, {
+        .text(x + toCenter * (seatRadius + space(this.layout, 4, 3)), y, `${seat.bet}`, {
           fontSize: `${px(this.layout, 13, 10)}px`,
           fontStyle: 'bold',
           color: '#0b3d2e',
           backgroundColor: '#f5d47a',
           padding: { x: space(this.layout, 6, 4), y: space(this.layout, 2, 2) },
         })
-        .setOrigin(0.5, 1);
+        .setOrigin(toCenter === 1 ? 0 : 1, 0.5);
       this.root.add(bet);
     }
   }

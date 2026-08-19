@@ -103,6 +103,11 @@ export interface HandResultPayload {
   winners: HandWinner[];
   /** Vazio quando a mão acabou sem showdown (todos desistiram). */
   showdown: ShowdownHand[];
+  /**
+   * O board como parou. Já era público durante a mão; vem junto para o cliente
+   * manter as cartas na mesa até a próxima começar.
+   */
+  communityCards: Card[];
 }
 
 /** Table state broadcast to everyone in the room. */

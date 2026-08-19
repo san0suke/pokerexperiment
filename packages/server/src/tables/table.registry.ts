@@ -219,6 +219,7 @@ function closeHand(table: Table): HandResultPayload | null {
       holeCards: entry.holeCards,
       description: HAND_RANK_LABELS[entry.rank],
     })),
+    communityCards: [...hand.board],
   };
 
   table.hand = null;
